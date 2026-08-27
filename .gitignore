@@ -36,7 +36,7 @@ models/
 
 # OS
 .DS_Store
-Thumbs.db.deps/
-.venv/
-__pycache__/
-*.pyc
+Thumbs.db
+
+# Local dependencies
+.deps/
