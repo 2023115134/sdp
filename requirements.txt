@@ -1,0 +1,5 @@
+# Install with: python -m pip install -r requirements.txt
+# Python 3.11 is required. See README.md for laptop and setup requirements.
+transformers>=4.41.0
+torch>=2.2.0
+pytest>=8.0.0
