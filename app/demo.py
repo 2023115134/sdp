@@ -76,7 +76,7 @@ def main() -> None:
 
     position_generator = PositionGenerator(
         offset_do=32,
-        max_story_length=1000,
+        max_story_length=2000,
     )
 
     positions = position_generator.generate_for_message(
@@ -123,8 +123,8 @@ def main() -> None:
         positions=positions,
         temperature=0.70,
         top_k=40,
-        max_new_tokens=8,
-        max_attempts=4000,
+        max_new_tokens=128,
+        max_attempts=10000,
         max_retries=6,
     )
 
@@ -245,6 +245,8 @@ def main() -> None:
         "Secret match    :",
         "PASS" if secret_match else "FAIL",
     )
+
+    
 
     print("Mapped secret   :", mapped)
     print("Extracted mapped:", extracted.characters)
