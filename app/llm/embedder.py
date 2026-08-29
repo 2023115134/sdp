@@ -67,7 +67,7 @@ class EmbedderLLM:
     MAX_TEMPERATURE = 0.9
     MAX_TOP_K = 60
 
-    DEFAULT_RETRIES = 8
+    DEFAULT_RETRIES = 12
 
     # Candidate scoring.
     # Probability remains dominant because this is an LLM
@@ -187,10 +187,8 @@ class EmbedderLLM:
         actual: str,
         required: str,
     ) -> bool:
-
-        if not actual or not required:
+        if actual is None or required is None:
             return False
-
         return actual.upper() == required.upper()
 
     @staticmethod
@@ -358,6 +356,33 @@ class EmbedderLLM:
 
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _is_sentence_complete(story: str) -> bool:
+        stripped = story.strip()
+        if not stripped:
+            return False
+        last = stripped[-1]
+        return last in ".!?\"'”’"
+
+    @staticmethod
+    def _is_repetitive_continuation(story: str, token: str) -> bool:
+        if not token or not token.strip():
+            return True
+
+        text = (story + token).lower()
+        words = re.findall(r"[A-Za-z]+", text)
+
+        if len(words) >= 2 and words[-1] == words[-2]:
+            return True
+
+        if len(words) >= 3:
+            recent = words[-8:]
+            for i in range(len(recent) - 2):
+                if recent[i] == recent[i + 2] and recent[i] != recent[i + 1]:
+                    return True
+
+        return False
+
     @classmethod
     def _validate_cover_naturalness(
         cls,
@@ -481,6 +506,70 @@ class EmbedderLLM:
             ),
         }
 
+    def _complete_cover_text(
+        self,
+        story: str,
+        topic: str,
+        max_tokens: int = 80,
+    ) -> str:
+        if not self._needs_completion(story):
+            return story
+
+        for temperature, top_k in (
+            (0.75, 60),
+            (0.85, 60),
+            (0.90, 60),
+            (0.80, 60),
+        ):
+            candidate_story = story
+
+            for _ in range(max_tokens):
+                candidates = self.llm_generator.get_next_token_candidates(
+                    prompt=self._model_prompt(topic, candidate_story),
+                    top_k=top_k,
+                    temperature=temperature,
+                )
+
+                if not candidates:
+                    break
+
+                valid = []
+                for candidate in candidates:
+                    token = candidate.token
+                    if not token:
+                        continue
+
+                    next_story = candidate_story + token
+                    if self._is_repetitive_continuation(candidate_story, token):
+                        continue
+
+                    valid.append(candidate)
+
+                if not valid:
+                    break
+
+                normal = self._select_normal_candidate(
+                    story=candidate_story,
+                    candidates=valid,
+                    topic=topic,
+                )
+
+                if normal is None:
+                    break
+
+                candidate_story += normal.token
+
+                if not self._needs_completion(candidate_story):
+                    return candidate_story
+
+            if not self._needs_completion(candidate_story):
+                return candidate_story
+
+        ended = story.rstrip()
+        if ended and ended[-1] not in ".!?\"'”’":
+            ended += "."
+        return ended
+
     # ==================================================================
     # SCORE CANDIDATE
     # ==================================================================
@@ -578,46 +667,46 @@ class EmbedderLLM:
             if not token:
                 continue
 
-            if candidate.probability < self.MIN_CANDIDATE_PROBABILITY:
-                continue
-
             new_story = story + token
 
             # Candidate must actually reach the target position.
             if len(new_story) <= position:
                 continue
 
+            target_character = new_story[position]
+
             # Candidate must NOT skip the target incorrectly.
-            if self._character_matches(
-                new_story[position],
+            if not self._character_matches(
+                target_character,
                 character,
             ):
+                continue
 
-                naturalness = (
-                    self._candidate_naturalness(
-                        story=story,
-                        token=token,
-                        topic=topic,
-                    )
-                )
-
-                score = self._score_candidate(
+            naturalness = (
+                self._candidate_naturalness(
                     story=story,
                     token=token,
-                    probability=candidate.probability,
                     topic=topic,
                 )
+            )
 
-                if naturalness < 0.25:
-                    continue
+            score = self._score_candidate(
+                story=story,
+                token=token,
+                probability=candidate.probability,
+                topic=topic,
+            )
 
-                valid.append(
-                    (
-                        score,
-                        candidate,
-                        naturalness,
-                    )
+            if naturalness < 0.25:
+                continue
+
+            valid.append(
+                (
+                    score,
+                    candidate,
+                    naturalness,
                 )
+            )
 
         if not valid:
             return None
@@ -628,6 +717,57 @@ class EmbedderLLM:
             reverse=True,
         )
 
+        return valid[0]
+
+    # ==================================================================
+    # SELECT SPACE CANDIDATE
+    # ==================================================================
+
+    def _select_space_candidate(
+        self,
+        story: str,
+        candidates,
+        position: int,
+        topic: str,
+    ):
+        valid = []
+
+        for candidate in candidates:
+            token = candidate.token
+            if not token:
+                continue
+
+            new_story = story + token
+
+            if len(new_story) <= position:
+                continue
+
+            # SPACE validation is based on the resulting story character because
+            # Qwen uses subword tokens with leading whitespace.
+            target_character = new_story[position]
+            if not (target_character == " " or target_character.isspace()):
+                continue
+
+            naturalness = self._candidate_naturalness(
+                story=story,
+                token=token,
+                topic=topic,
+            )
+
+            # Do NOT apply MIN_CANDIDATE_PROBABILITY to SPACE.
+            score = self._score_candidate(
+                story=story,
+                token=token,
+                probability=candidate.probability,
+                topic=topic,
+            )
+
+            valid.append((score, candidate, naturalness))
+
+        if not valid:
+            return None
+
+        valid.sort(key=lambda item: item[0], reverse=True)
         return valid[0]
 
     # ==================================================================
@@ -674,41 +814,33 @@ class EmbedderLLM:
             attempt_counter[0] += len(candidates)
 
             if attempt_counter[0] > max_attempts:
-                raise RuntimeError(
-                    "Maximum candidate evaluations exceeded."
-                )
+                return None
 
             # ----------------------------------------------------------
             # First check whether a candidate can directly satisfy
             # the target position.
             # ----------------------------------------------------------
 
-            selected = self._select_embedding_candidate(
-                story=story,
-                candidates=candidates,
-                character=character,
-                position=position,
-                topic=topic,
-            )
+            if character == " ":
+                selected = self._select_space_candidate(
+                    story=story,
+                    candidates=candidates,
+                    position=position,
+                    topic=topic,
+                )
+            else:
+                selected = self._select_embedding_candidate(
+                    story=story,
+                    candidates=candidates,
+                    character=character,
+                    position=position,
+                    topic=topic,
+                )
 
             if selected is not None:
 
-                score, candidate, naturalness = selected
-
-                new_story = story + candidate.token
-
-                logger.info(
-                    "Selected embedding token=%r "
-                    "target=%d probability=%.6f "
-                    "naturalness=%.2f normalized_score=%.2f",
-                    candidate.token,
-                    position,
-                    candidate.probability,
-                    naturalness,
-                    score,
-                )
-
-                return new_story
+                _, candidate, _ = selected
+                return story + candidate.token
 
             # ----------------------------------------------------------
             # No direct candidate.
@@ -767,25 +899,25 @@ class EmbedderLLM:
         max_attempts: int,
         attempt_counter: list[int],
     ):
+        """
+        Embed one required character at the fixed target position.
 
-        retry_temperature = temperature
-        retry_top_k = top_k
+        Use the fixed retry order required by the paper workflow.
+        """
 
         original_story = story
+        retry_schedule = [
+            (0.70, 40), (0.70, 50), (0.70, 60),
+            (0.75, 40), (0.75, 50), (0.75, 60),
+            (0.80, 40), (0.80, 50), (0.80, 60),
+        ]
 
-        for retry in range(1, max_retries + 1):
+        for retry_number, (retry_temperature, retry_top_k) in enumerate(
+            retry_schedule,
+            start=1,
+        ):
+            print(f"Retry {retry_number}: T={retry_temperature:.2f} k={retry_top_k}")
 
-            logger.info(
-                "Character %r target=%d retry=%d "
-                "T=%.2f k=%d",
-                character,
-                position,
-                retry,
-                retry_temperature,
-                retry_top_k,
-            )
-
-            # Every retry starts from the previous successful position.
             story = original_story
 
             result = self._generate_to_position(
@@ -801,7 +933,6 @@ class EmbedderLLM:
             )
 
             if result is not None:
-
                 if (
                     position < len(result)
                     and self._character_matches(
@@ -809,43 +940,14 @@ class EmbedderLLM:
                         character,
                     )
                 ):
-                    logger.info(
-                        "Character %r successfully embedded "
-                        "at position %d.",
-                        character,
-                        position,
-                    )
-
+                    print("Status: Embedded successfully")
                     return result
 
-            # ----------------------------------------------------------
-            # Paper-inspired retry adjustment.
-            # ----------------------------------------------------------
-
-            if retry_temperature < self.MAX_TEMPERATURE:
-
-                retry_temperature = min(
-                    self.MAX_TEMPERATURE,
-                    round(
-                        retry_temperature + 0.05,
-                        2,
-                    ),
-                )
-
-            elif retry_top_k < self.MAX_TOP_K:
-
-                retry_top_k += 5
-                retry_temperature = temperature
-
-            else:
-
-                # No more parameter expansion.
-                break
+            print("Retrying...")
 
         raise RuntimeError(
-            f"Unable to embed character {character!r} "
-            f"at position {position} after "
-            f"{max_retries} retries."
+            f"Unable to embed character '{character}' at position {position} "
+            "after all retry configurations."
         )
 
     # ==================================================================
@@ -898,7 +1000,6 @@ class EmbedderLLM:
             )
 
         self.llm_generator._load_backend()
-        logger.info("LLM backend ready; reusing model for all candidates.")
 
         # --------------------------------------------------------------
         # Start story.
@@ -922,35 +1023,6 @@ class EmbedderLLM:
 
         attempt_counter = [0]
 
-        logger.info("=" * 70)
-        logger.info(
-            "STARTING PAPER-BASED EmbedderLLM"
-        )
-        logger.info(
-            "Model: %s",
-            getattr(
-                self.llm_generator,
-                "model_name",
-                "unknown",
-            ),
-        )
-        logger.info(
-            "Characters: %r",
-            characters,
-        )
-        logger.info(
-            "Positions: %s",
-            list(positions),
-        )
-        logger.info(
-            "Initial temperature: %.2f",
-            temperature,
-        )
-        logger.info(
-            "Initial top-k: %d",
-            top_k,
-        )
-
         # --------------------------------------------------------------
         # Embed every character sequentially.
         # --------------------------------------------------------------
@@ -965,20 +1037,11 @@ class EmbedderLLM:
             )
         ):
 
-            logger.info("-" * 70)
-            logger.info(
-                "Embedding %d/%d",
-                index + 1,
-                len(characters),
-            )
-            logger.info(
-                "Required character: %r",
-                character,
-            )
-            logger.info(
-                "Target position: %d",
-                position,
-            )
+            display_char = "SPACE" if character == " " else character
+            print("--------------------------------------------------")
+            print(f"Embedding {index + 1}/{len(characters)}")
+            print(f"Character: {display_char}")
+            print(f"Position: {position}")
 
             # The current story must never already be beyond target.
             if len(story) > position:
@@ -1019,11 +1082,6 @@ class EmbedderLLM:
         # Final validation.
         # --------------------------------------------------------------
 
-        logger.info("=" * 70)
-        logger.info(
-            "FINAL EMBEDDING VALIDATION"
-        )
-
         for character, position in zip(
             characters,
             positions,
@@ -1043,14 +1101,6 @@ class EmbedderLLM:
                 character,
             )
 
-            logger.info(
-                "position=%d expected=%r actual=%r PASS=%s",
-                position,
-                character,
-                actual,
-                passed,
-            )
-
             if not passed:
 
                 raise RuntimeError(
@@ -1058,38 +1108,25 @@ class EmbedderLLM:
                 )
 
         # --------------------------------------------------------------
-        # Naturalness validation.
+        # Extend only the unfinished tail after the last embedded position.
+        # The fixed-position payload itself remains unchanged.
         # --------------------------------------------------------------
 
-        naturalness = (
-            self._validate_cover_naturalness(
-                story=story,
-                topic=topic,
-            )
+        story = self._complete_cover_text(
+            story=story,
+            topic=topic,
+            max_tokens=80,
+        )
+
+        naturalness = self._validate_cover_naturalness(
+            story=story,
+            topic=topic,
         )
 
         logger.info(
-            "NATURALNESS VALIDATION: %s",
+            "Final cover naturalness: %s",
             naturalness,
         )
-
-        logger.info(
-            "Final story length: %d",
-            len(story),
-        )
-
-        logger.info(
-            "Total candidate evaluations: %d",
-            attempt_counter[0],
-        )
-
-        # --------------------------------------------------------------
-        # IMPORTANT:
-        # Do not fail C == C' simply because the heuristic naturalness
-        # checker dislikes the text. The primary Phase-1 correctness
-        # condition is that the fixed-position characters are recovered.
-        # Naturalness is reported separately.
-        # --------------------------------------------------------------
 
         return EmbeddingResult(
             story=story,
