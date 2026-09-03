@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 3100 2650" width="3100" height="2650">
+<rect x="0" y="0" width="3100" height="2650" fill="white"/>
+
+<defs>
+  <marker id="arrow" markerWidth="12" markerHeight="12" refX="9" refY="5" orient="auto" markerUnits="userSpaceOnUse">
+    <path d="M0,0 L10,5 L0,10 L3,5 Z" fill="black"/>
+  </marker>
+</defs>
+<text x="1550.0" y="58.2" font-family="Arial, Helvetica, sans-serif" font-size="38" font-weight="bold" font-style="normal" text-anchor="middle" fill="black"><tspan x="1550.0" dy="0">CRYPTOGRAPHIC CORE — SYSTEM DESIGN</tspan></text>
+<text x="1550.0" y="90.1" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="normal" font-style="italic" text-anchor="middle" fill="black"><tspan x="1550.0" dy="0">Key Exchange, Key Derivation (PBKDF2), Position Generation (SHAKE128) and AEAD Encryption / Decryption Modules</tspan></text>
+<polygon points="460,155.0 610.0,225 460,295.0 310.0,225" fill="white" stroke="black" stroke-width="3"/>
+<text x="460" y="217.4" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="normal" font-style="normal" text-anchor="middle" fill="black"><tspan x="460" dy="0">Communication</tspan><tspan x="460" dy="28">Mode?</tspan></text>
+<line x1="460" y1="295.0" x2="460" y2="340" stroke="black" stroke-width="3"/>
+<circle cx="460" cy="340" r="5" fill="black"/>
+<line x1="460" y1="340" x2="260" y2="340" stroke="black" stroke-width="3"/>
+<text x="360.0" y="334.8" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="normal" font-style="italic" text-anchor="middle" fill="black"><tspan x="360.0" dy="0">Symmetric</tspan></text>
+<polygon points="84.0,430.0 484.0,430.0 436.0,520.0 36.0,520.0" fill="white" stroke="black" stroke-width="3"/>
+<text x="260" y="481.7" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="normal" font-style="normal" text-anchor="middle" fill="black"><tspan x="260" dy="0">Pre-Shared Password</tspan></text>
+<line x1="260" y1="340" x2="260" y2="430.0" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="460" y1="340" x2="1470.0" y2="340" stroke="black" stroke-width="3"/>
+<text x="965.0" y="334.8" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="normal" font-style="italic" text-anchor="middle" fill="black"><tspan x="965.0" dy="0">Asymmetric / Public-Key</tspan></text>
+<line x1="1470.0" y1="340" x2="1470.0" y2="305" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="1150" y="305" width="640" height="430" fill="white" stroke="black" stroke-width="5"/>
+<text x="1470.0" y="342.7" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="bold" font-style="normal" text-anchor="middle" fill="black"><tspan x="1470.0" dy="0">MODULE 1 — KEY EXCHANGE</tspan></text>
+<rect x="1250" y="395" width="440" height="110" fill="white" stroke="black" stroke-width="3"/>
+<text x="1470.0" y="442.2" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="normal" font-style="normal" text-anchor="middle" fill="black"><tspan x="1470.0" dy="0">Curve25519 / ECDHE</tspan><tspan x="1470.0" dy="29">(Key Agreement)</tspan></text>
+<line x1="1470.0" y1="505" x2="1470.0" y2="570" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<polygon points="1344.0,575.0 1644.0,575.0 1596.0,665.0 1296.0,665.0" fill="white" stroke="black" stroke-width="3"/>
+<text x="1470.0" y="626.7" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="normal" font-style="normal" text-anchor="middle" fill="black"><tspan x="1470.0" dy="0">Shared Secret</tspan></text>
+<rect x="100" y="820" width="2900" height="370" fill="white" stroke="black" stroke-width="5"/>
+<text x="1550.0" y="857.7" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="bold" font-style="normal" text-anchor="middle" fill="black"><tspan x="1550.0" dy="0">MODULE 2 — KEY MANAGEMENT   (PBKDF2 Key Derivation)</tspan></text>
+<rect x="220" y="925" width="520" height="110" fill="white" stroke="black" stroke-width="3"/>
+<text x="480.0" y="972.2" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="normal" font-style="normal" text-anchor="middle" fill="black"><tspan x="480.0" dy="0">Password / Pre-Shared</tspan><tspan x="480.0" dy="29">Key Handling</tspan></text>
+<rect x="850" y="925" width="560" height="110" fill="white" stroke="black" stroke-width="3"/>
+<text x="1130.0" y="986.7" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="normal" font-style="normal" text-anchor="middle" fill="black"><tspan x="1130.0" dy="0">PBKDF2 Key Derivation</tspan></text>
+<rect x="1520" y="925" width="560" height="110" fill="white" stroke="black" stroke-width="3"/>
+<text x="1800.0" y="986.7" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="normal" font-style="normal" text-anchor="middle" fill="black"><tspan x="1800.0" dy="0">Derived Key Separation</tspan></text>
+<line x1="740" y1="980.0" x2="850" y2="980.0" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="1410" y1="980.0" x2="1520" y2="980.0" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="260" y1="520.0" x2="260" y2="800" stroke="black" stroke-width="3"/>
+<line x1="260" y1="800" x2="365.6" y2="800" stroke="black" stroke-width="3"/>
+<line x1="365.6" y1="800" x2="365.6" y2="925" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="1470.0" y1="665.0" x2="1470.0" y2="760" stroke="black" stroke-width="3"/>
+<line x1="1470.0" y1="760" x2="594.4" y2="760" stroke="black" stroke-width="3"/>
+<line x1="594.4" y1="760" x2="594.4" y2="925" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="1676.8" y1="1035" x2="1676.8" y2="1245" stroke="black" stroke-width="3"/>
+<line x1="1676.8" y1="1245" x2="650" y2="1245" stroke="black" stroke-width="3"/>
+<line x1="650" y1="1245" x2="650" y2="1385" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="1923.2" y1="1035" x2="1923.2" y2="1245" stroke="black" stroke-width="3"/>
+<line x1="1923.2" y1="1245" x2="2575" y2="1245" stroke="black" stroke-width="3"/>
+<line x1="2575" y1="1245" x2="2575" y2="1385" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<polygon points="454.0,1390.0 894.0,1390.0 846.0,1490.0 406.0,1490.0" fill="white" stroke="black" stroke-width="3"/>
+<text x="650" y="1432.2" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="normal" font-style="normal" text-anchor="middle" fill="black"><tspan x="650" dy="0">dk1 Key (128-bit)</tspan><tspan x="650" dy="29">Encryption Key</tspan></text>
+<polygon points="2369.0,1390.0 2829.0,1390.0 2781.0,1490.0 2321.0,1490.0" fill="white" stroke="black" stroke-width="3"/>
+<text x="2575" y="1432.2" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="normal" font-style="normal" text-anchor="middle" fill="black"><tspan x="2575" dy="0">dk2 Key (128-bit)</tspan><tspan x="2575" dy="29">Position-Generation Key</tspan></text>
+<rect x="2150" y="1600" width="850" height="695.0" fill="white" stroke="black" stroke-width="5"/>
+<text x="2575.0" y="1621.7" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="bold" font-style="normal" text-anchor="middle" fill="black"><tspan x="2575.0" dy="0">MODULE 3 — POSITION</tspan><tspan x="2575.0" dy="32">GENERATION (SHAKE128)</tspan></text>
+<rect x="2230" y="1690" width="690" height="90" fill="white" stroke="black" stroke-width="3"/>
+<text x="2575.0" y="1741.7" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="normal" font-style="normal" text-anchor="middle" fill="black"><tspan x="2575.0" dy="0">SHAKE128 XOF</tspan></text>
+<line x1="2575.0" y1="1780" x2="2575.0" y2="1835" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="2230" y="1835" width="690" height="90" fill="white" stroke="black" stroke-width="3"/>
+<text x="2575.0" y="1886.7" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="normal" font-style="normal" text-anchor="middle" fill="black"><tspan x="2575.0" dy="0">Offset / Chunk Processing</tspan></text>
+<line x1="2575.0" y1="1925" x2="2575.0" y2="1980" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="2230" y="1980" width="690" height="90" fill="white" stroke="black" stroke-width="3"/>
+<text x="2575.0" y="2031.7" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="normal" font-style="normal" text-anchor="middle" fill="black"><tspan x="2575.0" dy="0">Position Calculation</tspan></text>
+<line x1="2575.0" y1="2070" x2="2575.0" y2="2145.0" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<polygon points="2249.0,2145.0 2949.0,2145.0 2901.0,2255.0 2201.0,2255.0" fill="white" stroke="black" stroke-width="3"/>
+<text x="2575.0" y="2192.2" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="normal" font-style="normal" text-anchor="middle" fill="black"><tspan x="2575.0" dy="0">Position Sequence</tspan><tspan x="2575.0" dy="29">b = [b₀, b₁, ..., bₙ₋₁]</tspan></text>
+<line x1="2575" y1="1490" x2="2575" y2="1600" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="2575.0" y1="2255.0" x2="2575.0" y2="2325.0" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<text x="2575.0" y="2362.8" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="normal" font-style="italic" text-anchor="middle" fill="black"><tspan x="2575.0" dy="0">To Embedding / Extraction Layer</tspan></text>
+<text x="2575.0" y="2388.8" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="normal" font-style="italic" text-anchor="middle" fill="black"><tspan x="2575.0" dy="0">(EmbedderLLM Engine / Message Extraction Engine — outside scope)</tspan></text>
+<rect x="100" y="1600" width="1900" height="985" fill="white" stroke="black" stroke-width="5"/>
+<text x="1050.0" y="1637.7" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="bold" font-style="normal" text-anchor="middle" fill="black"><tspan x="1050.0" dy="0">MODULE 4 — ENCRYPTION &amp; DECRYPTION   (AEAD)</tspan></text>
+<text x="550" y="1701.1" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="bold" font-style="normal" text-anchor="middle" fill="black"><tspan x="550" dy="0">ENCRYPTION PATH (SENDER)</tspan></text>
+<text x="1380" y="1701.1" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="bold" font-style="normal" text-anchor="middle" fill="black"><tspan x="1380" dy="0">DECRYPTION PATH (RECEIVER)</tspan></text>
+<line x1="965.0" y1="1720" x2="965.0" y2="2555" stroke="black" stroke-width="2" stroke-dasharray="10,8"/>
+<polygon points="364.0,1800.0 784.0,1800.0 736.0,1910.0 316.0,1910.0" fill="white" stroke="black" stroke-width="3"/>
+<text x="550" y="1861.7" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="normal" font-style="normal" text-anchor="middle" fill="black"><tspan x="550" dy="0">User Input Plaintext</tspan></text>
+<polygon points="1164.0,1800.0 1644.0,1800.0 1596.0,1910.0 1116.0,1910.0" fill="white" stroke="black" stroke-width="3"/>
+<text x="1380" y="1861.7" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="normal" font-style="normal" text-anchor="middle" fill="black"><tspan x="1380" dy="0">Recovered Protected Data</tspan></text>
+<text x="1380" y="1783.8" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="normal" font-style="italic" text-anchor="middle" fill="black"><tspan x="1380" dy="0">(from Message Extraction Engine — outside scope)</tspan></text>
+<rect x="290" y="1980" width="520" height="110" fill="white" stroke="black" stroke-width="3"/>
+<text x="550.0" y="2041.7" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="normal" font-style="normal" text-anchor="middle" fill="black"><tspan x="550.0" dy="0">AEAD Encryption</tspan></text>
+<rect x="1120" y="1980" width="520" height="110" fill="white" stroke="black" stroke-width="3"/>
+<text x="1380.0" y="2041.7" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="normal" font-style="normal" text-anchor="middle" fill="black"><tspan x="1380.0" dy="0">AEAD Decryption</tspan></text>
+<line x1="550" y1="1910.0" x2="550" y2="1980" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="1380" y1="1910.0" x2="1380" y2="1980" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="650" y1="1490.0" x2="650" y2="1600" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="650" y1="1600" x2="650" y2="1750" stroke="black" stroke-width="3"/>
+<circle cx="650" cy="1750" r="5" fill="black"/>
+<line x1="650" y1="1750" x2="810" y2="1750" stroke="black" stroke-width="3"/>
+<line x1="810" y1="1750" x2="1050" y2="1750" stroke="black" stroke-width="3"/>
+<line x1="810" y1="1750" x2="810" y2="1980" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="1050" y1="1750" x2="1050" y2="2035.0" stroke="black" stroke-width="3"/>
+<line x1="1050" y1="2035.0" x2="1120" y2="2035.0" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="290" y="2160" width="520" height="110" fill="white" stroke="black" stroke-width="3"/>
+<text x="550.0" y="2221.7" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="normal" font-style="normal" text-anchor="middle" fill="black"><tspan x="550.0" dy="0">Ciphertext Generation</tspan></text>
+<line x1="550" y1="2090" x2="550" y2="2160" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<polygon points="344.0,2340.0 804.0,2340.0 756.0,2450.0 296.0,2450.0" fill="white" stroke="black" stroke-width="3"/>
+<text x="550" y="2387.2" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="normal" font-style="normal" text-anchor="middle" fill="black"><tspan x="550" dy="0">Ciphertext</tspan><tspan x="550" dy="29">(Protected Data)</tspan></text>
+<line x1="550" y1="2270" x2="550" y2="2340" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<polygon points="1380,2160.0 1590.0,2255 1380,2350.0 1170.0,2255" fill="white" stroke="black" stroke-width="3"/>
+<text x="1380" y="2247.4" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="normal" font-style="normal" text-anchor="middle" fill="black"><tspan x="1380" dy="0">Authentication</tspan><tspan x="1380" dy="28">Verification Valid?</tspan></text>
+<line x1="1380" y1="2090" x2="1380" y2="2160.0" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<polygon points="1194.0,2420.0 1614.0,2420.0 1566.0,2530.0 1146.0,2530.0" fill="white" stroke="black" stroke-width="3"/>
+<text x="1380" y="2481.7" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="normal" font-style="normal" text-anchor="middle" fill="black"><tspan x="1380" dy="0">Output Plaintext</tspan></text>
+<line x1="1380" y1="2350.0" x2="1380" y2="2420" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<text x="1380.0" y="2408.8" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="normal" font-style="italic" text-anchor="middle" fill="black"><tspan x="1380.0" dy="0">Yes</tspan></text>
+<line x1="1590.0" y1="2255" x2="1790" y2="2255" stroke="black" stroke-width="3"/>
+<text x="1690.0" y="2248.8" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="normal" font-style="italic" text-anchor="middle" fill="black"><tspan x="1690.0" dy="0">No</tspan></text>
+<line x1="1790" y1="2255" x2="1790" y2="2420" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<polygon points="1624.0,2420.0 2004.0,2420.0 1956.0,2530.0 1576.0,2530.0" fill="white" stroke="black" stroke-width="3"/>
+<text x="1790" y="2467.8" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="normal" font-style="normal" text-anchor="middle" fill="black"><tspan x="1790" dy="0">Decryption Failure /</tspan><tspan x="1790" dy="26">Message Rejected</tspan></text>
+<line x1="550" y1="2450.0" x2="550" y2="2520.0" stroke="black" stroke-width="3" marker-end="url(#arrow)"/>
+<text x="550" y="2557.8" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="normal" font-style="italic" text-anchor="middle" fill="black"><tspan x="550" dy="0">To EmbedderLLM Engine</tspan></text>
+<text x="550" y="2581.8" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="normal" font-style="italic" text-anchor="middle" fill="black"><tspan x="550" dy="0">(embeds ciphertext — outside scope)</tspan></text>
+</svg>

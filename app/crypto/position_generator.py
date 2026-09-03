@@ -13,8 +13,6 @@ too close together for the language model to satisfy.
 from __future__ import annotations
 
 import hashlib
-
-
 class PositionGenerator:
     """Generate deterministic, unique embedding positions."""
 
@@ -208,14 +206,17 @@ class PositionGenerator:
 
     def generate(
         self,
-        key: str | bytes | int,
-        number_of_positions: int,
+        key: str | bytes | int | None = None,
+        number_of_positions: int = 0,
+        key_material: str | bytes | int | None = None,
     ) -> list[int]:
         """
         Generate deterministic unique embedding positions.
 
-        The positions are generated using SHAKE128 and must satisfy
-        the configured minimum gap.
+        The positions are generated using SHAKE128 and must satisfy the
+        configured minimum gap. The optional key_material parameter allows the
+        Phase-2 flow to pass PBKDF2-derived dk2 bytes directly while preserving
+        the legacy key-based interface used by existing Phase-1 callers.
         """
 
         if number_of_positions < 0:
@@ -228,8 +229,15 @@ class PositionGenerator:
 
             return []
 
-        key_material = self._normalize_key(
-            key
+        if key_material is not None:
+            effective_key = key_material
+        elif key is not None:
+            effective_key = key
+        else:
+            raise ValueError("key or key_material is required")
+
+        key_material_bytes = self._normalize_key(
+            effective_key
         )
 
         if self._legacy_sampling:
@@ -237,7 +245,7 @@ class PositionGenerator:
             counter = 0
             while len(positions) < number_of_positions:
                 candidate = self._candidate_position(
-                    key_material,
+                    key_material_bytes,
                     counter,
                 )
                 counter += 1
@@ -274,7 +282,7 @@ class PositionGenerator:
         position = self.offset_do
 
         for counter in range(number_of_positions):
-            position += self._step_size(key_material, counter)
+            position += self._step_size(key_material_bytes, counter)
 
             if position >= self.max_story_length:
                 raise ValueError(
@@ -298,8 +306,9 @@ class PositionGenerator:
 
     def generate_for_message(
         self,
-        key: str | bytes | int,
-        message_length: int,
+        key: str | bytes | int | None = None,
+        message_length: int = 0,
+        key_material: str | bytes | int | None = None,
     ) -> list[int]:
         """
         Generate exactly one position per embedded character.
@@ -314,7 +323,45 @@ class PositionGenerator:
         return self.generate(
             key=key,
             number_of_positions=message_length,
+            key_material=key_material,
         )
+
+
+def generate_positions(
+    key_material: str | bytes | int | None = None,
+    number_of_positions: int = 0,
+    *,
+    key: str | bytes | int | None = None,
+    chunk_size: int | None = None,
+    offset_do: int = 32,
+    max_story_length: int = 100_000,
+    min_gap: int = 20,
+    bit_chunk_size: int = 5,
+) -> list[int]:
+    """Generate deterministic SHAKE128 positions from key material.
+
+    This helper is intended for the Phase-2 flow where dk2 from PBKDF2 is used as
+    the SHAKE128 key material. It preserves the legacy PositionGenerator
+    behavior when key_material is absent by accepting the older key argument.
+    """
+
+    if key_material is None:
+        if key is None:
+            raise ValueError("key_material or key is required")
+        key_material = key
+
+    generator = PositionGenerator(
+        chunk_size=chunk_size,
+        offset_do=offset_do,
+        max_story_length=max_story_length,
+        min_gap=min_gap,
+        bit_chunk_size=bit_chunk_size,
+    )
+
+    return generator.generate(
+        key_material=key_material,
+        number_of_positions=number_of_positions,
+    )
 
 
 # ======================================================================

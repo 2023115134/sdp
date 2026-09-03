@@ -1,20 +1,39 @@
-"""LLM-SHIELD paper-based fixed-position end-to-end demo."""
+"""Interactive Phase-2 secure demo for the project.
+
+This demo uses the existing project modules without monkeypatching the LLM or
+crypto stack.
+
+Flow:
+    plaintext
+      -> PBKDF2
+      -> dk1 / dk2
+      -> AES-256-GCM using dk1
+      -> Enc = Tag || Ciphertext
+      -> h4 mapping
+      -> dk2-based SHAKE128 positions
+      -> existing EmbedderLLM/Qwen
+      -> generated story
+      -> extraction
+      -> reverse mapping
+      -> AEAD decrypt using original nonce + dk1
+      -> recovered plaintext
+"""
 
 from __future__ import annotations
 
+import getpass
 import logging
 import time
 
+from app.crypto.aead import decrypt, encrypt
+from app.crypto.aead_mapping import aead_to_character_sequence, character_sequence_to_aead
+from app.crypto.key_derivation import derive_keys, generate_salt
 from app.crypto.mapping import CharacterMap
-from app.crypto.position_generator import PositionGenerator
+from app.crypto.position_generator import generate_positions
 from app.extraction.extractor import Extractor
 from app.llm.embedder import EmbedderLLM
 from app.llm.generator import LLMGenerator
 
-
-# ----------------------------------------------------------------------
-# Logging
-# ----------------------------------------------------------------------
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,278 +41,163 @@ logging.basicConfig(
 )
 
 
+class DemoEmbedder(EmbedderLLM):
+    """Add demo-only timing around the unchanged real embedder operation."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._demo_embedding_started = time.perf_counter()
+
+    def _embed_one_character(self, *args, **kwargs):
+        character = kwargs.get("character", args[1] if len(args) > 1 else "")
+        position = kwargs.get("position", args[2] if len(args) > 2 else 0)
+        max_retries = kwargs.get("max_retries", args[6] if len(args) > 6 else 0)
+        elapsed = time.perf_counter() - self._demo_embedding_started
+        print(
+            f"[embedding] character={character!r} position={position} "
+            f"retries<= {max_retries} elapsed={elapsed:.1f}s"
+        )
+        result = super()._embed_one_character(*args, **kwargs)
+        self._demo_completed = getattr(self, "_demo_completed", 0) + 1
+        total = getattr(self, "_demo_total", "?")
+        elapsed = time.perf_counter() - self._demo_embedding_started
+        print(
+            f"[embedding] progress={self._demo_completed}/{total} "
+            f"elapsed={elapsed:.1f}s"
+        )
+        return result
+
+
 def main() -> None:
-
-    print("=" * 70)
-    print("LLM-SHIELD END-TO-END TEST")
-    print("=" * 70)
-
-    # ==============================================================
-    # 1. USER INPUT
-    # ==============================================================
-
-    secret = input("Enter secret message: ").strip()
-
-    if not secret:
-        raise ValueError("Secret message cannot be empty.")
+    print("=" * 74)
+    print("PHASE-2 SECURE DEMO")
+    print("=" * 74)
 
     while True:
-        topic = input("Enter topic: ").strip()
-
+        topic = input("Enter topic : ").strip() 
         if topic:
             break
+        print("Topic cannot be empty.")
 
-        print("Topic cannot be empty. Please enter a topic.")
+    secret = input("Enter secret message : ").strip() 
 
-    # ==============================================================
-    # 2. ORIGINAL SECRET
-    # ==============================================================
+    password = getpass.getpass("Enter password : ") 
 
-    print("\nORIGINAL SECRET")
-    print("-" * 70)
-    print(secret)
+    salt = generate_salt()
+    dk1, dk2 = derive_keys(password, salt)
 
-    # ==============================================================
-    # 3. CHARACTER MAPPING
-    # ==============================================================
+    print("\n[0/8] Input and key material")
+    print("[0/8] Plaintext:", repr(secret))
+    print("[0/8] Salt:", salt.hex())
+    print("[0/8] dk1 length:", len(dk1), "bytes")
+    print("[0/8] dk2 length:", len(dk2), "bytes")
 
-    character_map = CharacterMap()
-    mapped = character_map.encode(secret)
+    print("\n[1/8] Encrypting plaintext with AES-256-GCM using dk1")
+    plaintext = secret.encode("utf-8")
+    encrypted = encrypt(plaintext, dk1)
+    enc = encrypted["enc"]
+    nonce = encrypted["nonce"]
 
-    print("\nMAPPED SECRET")
-    print("-" * 70)
-    print(mapped)
+    print("[1/8] Plaintext length:", len(plaintext))
+    print("[1/8] Ciphertext length:", len(encrypted["ciphertext"]))
+    print("[1/8] Nonce:", nonce.hex())
+    print("[1/8] Authentication tag:", encrypted["tag"].hex())
+    print("[1/8] Enc length:", len(enc))
+    print("[1/8] Nonce length:", len(nonce))
+    print("[1/8] AEAD tag length:", len(encrypted["tag"]))
 
-    # ==============================================================
-    # 4. FIXED POSITION GENERATION
-    # ==============================================================
+    print("\n[2/8] Mapping AEAD payload into h4 character sequence")
+    mapped = aead_to_character_sequence(enc)
+    print("[2/8] Mapped payload length:", len(mapped))
+    print("[2/8] h4 mapped sequence:", repr(mapped))
 
-    print("\nPOSITION GENERATION")
-    print("-" * 70)
-
-    # Same key must be used for embedding and extraction.
-    key = "test-secret-key"
-
-    position_generator = PositionGenerator(
-        offset_do=32,
-        max_story_length=2000,
+    # The Phase-2 SHAKE128 generator adds a variable step per character, and
+    # with the default 5-bit chunking the worst-case path can require a much
+    # larger cover length than the plaintext length itself. Keep a comfortable
+    # bound so the demo doesn't fail on real payloads.
+    offset_do = 32
+    bit_chunk_size = 5
+    max_step = offset_do + ((1 << bit_chunk_size) - 1)
+    required_story_length = max(
+        5000,
+        offset_do + len(mapped) * max_step + 512,
     )
 
-    positions = position_generator.generate_for_message(
-        key=key,
-        message_length=len(mapped),
+    print("\n[3/8] Generating SHAKE128 positions from dk2")
+    positions = generate_positions(
+        key_material=dk2,
+        number_of_positions=len(mapped),
+        offset_do=offset_do,
+        max_story_length=required_story_length,
+        min_gap=1,
     )
+    print("[3/8] Number of embedding positions:", len(positions))
+    print("[3/8] SHAKE128 positions:", positions)
 
-    print("Secret length:", len(secret))
-    print("Mapped length:", len(mapped))
-    print("Positions:", positions)
-
-    # ==============================================================
-    # 5. LLM INITIALIZATION
-    # ==============================================================
-
-    print("\nLLM INITIALIZATION")
-    print("-" * 70)
-
+    print("\n[4/8] Running real EmbedderLLM/Qwen embedding")
     generator = LLMGenerator()
-
-    print("Model:", generator.model_name)
-    print("Device:", generator.device)
-
-    # ==============================================================
-    # 6. LLM STEGANOGRAPHIC EMBEDDING
-    # ==============================================================
-
-    print("\nLLM STEGANOGRAPHIC EMBEDDING")
-    print("-" * 70)
-
-    print("Topic:", topic)
-    print("Embedding mode: fixed (paper)")
-
-    embedder = EmbedderLLM(
-        llm_generator=generator,
-        character_map=character_map,
-    )
-
-    embedding_started = time.perf_counter()
-
+    character_map = CharacterMap()
+    embedder = DemoEmbedder(llm_generator=generator, character_map=character_map)
+    embedder._demo_total = len(mapped)
+    start = time.perf_counter()
     result = embedder.embed(
         topic=topic,
         characters=mapped,
         positions=positions,
-        temperature=0.70,
-        top_k=40,
-        max_new_tokens=128,
-        max_attempts=10000,
-        max_retries=6,
+        initial_story="",
+        temperature=0.7,
+        top_k=20,
+        max_new_tokens=32,
+        max_attempts=2500,
+        max_retries=3,
     )
+    embed_seconds = time.perf_counter() - start
+    print("[4/8] Embedding runtime:", round(embed_seconds, 2), "seconds")
+    print("[4/8] Story length:", len(result.story))
 
-    embedding_seconds = time.perf_counter() - embedding_started
+    print("\n[5/8] Generated story")
+    print(result.story)
 
-    cover_text = result.story
-
-    # Keep the positions returned by the embedder.
-    positions = result.positions
-
-    # ==============================================================
-    # 7. GENERATED COVER TEXT
-    # ==============================================================
-
-    print("\nGENERATED COVER TEXT")
-    print("=" * 70)
-    print(cover_text)
-
-    print("\nCOVER LENGTH")
-    print("-" * 70)
-    print(len(cover_text))
-
-    print("\nEMBEDDING POSITIONS")
-    print("-" * 70)
-    print(positions)
-
-    print("\nEMBEDDED CHARACTERS")
-    print("-" * 70)
-    print(result.embedded_characters)
-
-    print("\nCANDIDATE EVALUATIONS")
-    print("-" * 70)
-    print(result.attempts)
-
-    # ==============================================================
-    # 8. NATURALNESS VALIDATION
-    # ==============================================================
-
-    naturalness = embedder._validate_cover_naturalness(
-        cover_text,
-        topic,
-    )
-
-    print("\nNATURALNESS VALIDATION")
-    print("-" * 70)
-
-    print(
-        "Topic relevance:",
-        "PASS" if naturalness["topic_relevance"] else "WARNING",
-    )
-
-    print(
-        "Repetition check:",
-        "PASS" if naturalness["repetition"] else "WARNING",
-    )
-
-    print(
-        "Sentence completeness:",
-        "PASS" if naturalness["sentence_completeness"] else "WARNING",
-    )
-
-    print(
-        "Malformed/technical:",
-        "PASS" if naturalness["malformed_or_technical"] else "WARNING",
-    )
-
-    # ==============================================================
-    # 9. EXTRACTION
-    # ==============================================================
-
-    print("\nEXTRACTION")
-    print("-" * 70)
-
-    extraction_started = time.perf_counter()
-
-    extractor = Extractor(
-        position_generator=position_generator,
-        character_map=character_map,
-    )
-
-    extracted = extractor.recover(
-        cover_text=cover_text,
-        key=key,
-        message_length=len(mapped),
-    )
-
-    extraction_seconds = time.perf_counter() - extraction_started
-
-    print("Extracted mapped message:", extracted.characters)
-    print("Recovered secret:", extracted.message)
-
-    # ==============================================================
-    # 10. END-TO-END VERIFICATION
-    # ==============================================================
-
-    embedding_match = embedder.verify_embedding(
-        cover_text=cover_text,
-        mapped=mapped,
+    print("\n[6/8] Extraction and reverse mapping")
+    extractor = Extractor(position_generator=None, character_map=character_map)
+    extracted = extractor.extract(
+        cover_text=result.story,
         positions=positions,
     )
-    mapped_match = extracted.characters.upper() == mapped.upper()
-    secret_match = extracted.message == secret
+    print("[6/8] Extracted payload:", extracted)
+    print("[6/8] Extracted sequence:", repr(extracted))
+    recovered_enc = character_sequence_to_aead(extracted)
+    print("[6/8] Recovered Enc:", recovered_enc.hex())
+    print("[6/8] Enc round-trip:", recovered_enc == enc)
 
-    # IMPORTANT:
-    # Naturalness should be reported separately.
-    # It should NOT break cryptographic extraction verification.
-    end_to_end_pass = mapped_match and secret_match
-
-    print("\nEND-TO-END VERIFICATION")
-    print("-" * 70)
-
-    print("Original secret :", secret)
-    print("Recovered secret:", extracted.message)
-    print("Fixed positions :", positions)
-    print("Embedding check  :", "PASS" if embedding_match else "FAIL")
-
-    print(
-        "Secret match    :",
-        "PASS" if secret_match else "FAIL",
+    print("\n[7/8] Receiver-side AEAD decryption")
+    tag = recovered_enc[:16]
+    ciphertext = recovered_enc[16:]
+    recovered_plaintext = decrypt(
+        ciphertext=ciphertext,
+        tag=tag,
+        nonce=nonce,
+        dk1=dk1,
     )
+    print("[7/8] Recovered plaintext:", recovered_plaintext.decode("utf-8"))
 
-    
-
-    print("Mapped secret   :", mapped)
-    print("Extracted mapped:", extracted.characters)
-
-    print(
-        "Mapped match    :",
-        "PASS" if mapped_match else "FAIL",
+    print("\n[8/8] Verification")
+    pass_state = (
+        recovered_plaintext == plaintext
+        and extracted == mapped
+        and recovered_enc == enc
     )
+    print("=" * 74)
+    print("FINAL RESULT:", "PASS" if pass_state else "FAIL")
+    print("=" * 74)
 
-    # ==============================================================
-    # 11. PERFORMANCE
-    # ==============================================================
+    print("\nInput topic:", topic)
+    print("Input message:", secret)
+    print("Mapped payload length:", len(mapped))
+    print("Embedding positions:", len(positions))
+    print("Recovered plaintext:", recovered_plaintext.decode("utf-8"))
+    print("Overall status:", "PASS" if pass_state else "FAIL")
 
-    print("\nPERFORMANCE")
-    print("-" * 70)
-
-    print(
-        f"Embedding time: {embedding_seconds:.2f} seconds"
-    )
-
-    print(
-        f"Extraction time: {extraction_seconds:.4f} seconds"
-    )
-
-    print(
-        "Candidate evaluations:",
-        result.attempts,
-    )
-
-    # ==============================================================
-    # 12. FINAL RESULT
-    # ==============================================================
-
-    print("\nFINAL RESULT")
-    print("=" * 70)
-
-    if end_to_end_pass:
-        print("END-TO-END TEST: PASS")
-    else:
-        print("END-TO-END TEST: FAIL")
-
-    print("=" * 70)
-
-
-# ----------------------------------------------------------------------
-# Entry point
-# ----------------------------------------------------------------------
 
 if __name__ == "__main__":
     main()

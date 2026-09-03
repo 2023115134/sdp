@@ -25,10 +25,27 @@ class LLMConfig:
     seed: int | None = None
 
 
+@dataclass(frozen=True)
+class PBKDF2Config:
+    """Configuration for PBKDF2 key derivation."""
+
+    hash_name: str = "sha256"
+    iterations: int = int(os.getenv("PBKDF2_ITERATIONS", "200000"))
+    salt_length: int = int(os.getenv("PBKDF2_SALT_LENGTH", "16"))
+    key_length: int = int(os.getenv("PBKDF2_KEY_LENGTH", "64"))
+
+
 DEFAULT_LLM_CONFIG = LLMConfig()
+DEFAULT_PBKDF2_CONFIG = PBKDF2Config()
 
 
 def get_model_name() -> str:
     """Return the currently configured model name."""
 
     return DEFAULT_LLM_CONFIG.model_name
+
+
+def get_pbkdf2_iterations() -> int:
+    """Return the configured PBKDF2 iteration count."""
+
+    return DEFAULT_PBKDF2_CONFIG.iterations

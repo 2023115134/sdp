@@ -659,18 +659,21 @@ class EmbedderLLM:
     ):
 
         valid = []
+        rejection_reasons = []
 
         for candidate in candidates:
 
             token = candidate.token
 
             if not token:
+                rejection_reasons.append("empty token")
                 continue
 
             new_story = story + token
 
             # Candidate must actually reach the target position.
             if len(new_story) <= position:
+                rejection_reasons.append("token does not reach target position")
                 continue
 
             target_character = new_story[position]
@@ -680,6 +683,9 @@ class EmbedderLLM:
                 target_character,
                 character,
             ):
+                rejection_reasons.append(
+                    f"target contains {target_character!r}, expected {character!r}"
+                )
                 continue
 
             naturalness = (
@@ -698,6 +704,7 @@ class EmbedderLLM:
             )
 
             if naturalness < 0.25:
+                rejection_reasons.append("naturalness score below 0.25")
                 continue
 
             valid.append(
@@ -709,6 +716,11 @@ class EmbedderLLM:
             )
 
         if not valid:
+            self._last_failure_reason = (
+                "no valid candidate"
+                if not rejection_reasons
+                else "no valid candidate: " + "; ".join(rejection_reasons[:3])
+            )
             return None
 
         # Highest combined probability/naturalness score.
@@ -731,21 +743,27 @@ class EmbedderLLM:
         topic: str,
     ):
         valid = []
+        rejection_reasons = []
 
         for candidate in candidates:
             token = candidate.token
             if not token:
+                rejection_reasons.append("empty token")
                 continue
 
             new_story = story + token
 
             if len(new_story) <= position:
+                rejection_reasons.append("token does not reach target position")
                 continue
 
             # SPACE validation is based on the resulting story character because
             # Qwen uses subword tokens with leading whitespace.
             target_character = new_story[position]
             if not (target_character == " " or target_character.isspace()):
+                rejection_reasons.append(
+                    f"target contains {target_character!r}, expected a space"
+                )
                 continue
 
             naturalness = self._candidate_naturalness(
@@ -765,6 +783,11 @@ class EmbedderLLM:
             valid.append((score, candidate, naturalness))
 
         if not valid:
+            self._last_failure_reason = (
+                "no valid space candidate"
+                if not rejection_reasons
+                else "no valid space candidate: " + "; ".join(rejection_reasons[:3])
+            )
             return None
 
         valid.sort(key=lambda item: item[0], reverse=True)
@@ -787,6 +810,8 @@ class EmbedderLLM:
         attempt_counter: list[int],
     ):
 
+        self._last_failure_reason = "generation did not reach the target position"
+
         for step in range(max_steps):
 
             if len(story) > position:
@@ -797,6 +822,9 @@ class EmbedderLLM:
                     return story
 
                 # We have crossed the position with the wrong character.
+                self._last_failure_reason = (
+                    f"target contains {story[position]!r}, expected {character!r}"
+                )
                 return None
 
             candidates = (
@@ -809,11 +837,15 @@ class EmbedderLLM:
             )
 
             if not candidates:
+                self._last_failure_reason = "Qwen returned no candidates"
                 return None
 
             attempt_counter[0] += len(candidates)
 
             if attempt_counter[0] > max_attempts:
+                self._last_failure_reason = (
+                    f"maximum candidate attempts exceeded ({max_attempts})"
+                )
                 return None
 
             # ----------------------------------------------------------
@@ -867,6 +899,8 @@ class EmbedderLLM:
                 normal_candidates.append(candidate)
 
             if not normal_candidates:
+                if not getattr(self, "_last_failure_reason", ""):
+                    self._last_failure_reason = "all candidates would cross the target"
                 return None
 
             normal = self._select_normal_candidate(
@@ -876,6 +910,7 @@ class EmbedderLLM:
             )
 
             if normal is None:
+                self._last_failure_reason = "no natural continuation candidate"
                 return None
 
             story += normal.token
@@ -906,48 +941,61 @@ class EmbedderLLM:
         """
 
         original_story = story
+        last_failure_reason = "unknown embedding failure"
         retry_schedule = [
             (0.70, 40), (0.70, 50), (0.70, 60),
             (0.75, 40), (0.75, 50), (0.75, 60),
             (0.80, 40), (0.80, 50), (0.80, 60),
         ]
 
-        for retry_number, (retry_temperature, retry_top_k) in enumerate(
-            retry_schedule,
-            start=1,
-        ):
-            print(f"Retry {retry_number}: T={retry_temperature:.2f} k={retry_top_k}")
+        for retry_round in range(1, max_retries + 1):
+            for schedule_number, (retry_temperature, retry_top_k) in enumerate(
+                retry_schedule,
+                start=1,
+            ):
+                retry_number = ((retry_round - 1) * len(retry_schedule)) + schedule_number
+                print(
+                    f"Retry {retry_number}: T={retry_temperature:.2f} "
+                    f"k={retry_top_k}"
+                )
 
-            story = original_story
+                story = original_story
 
-            result = self._generate_to_position(
-                story=story,
-                character=character,
-                position=position,
-                topic=topic,
-                temperature=retry_temperature,
-                top_k=retry_top_k,
-                max_steps=max_steps,
-                max_attempts=max_attempts,
-                attempt_counter=attempt_counter,
-            )
+                result = self._generate_to_position(
+                    story=story,
+                    character=character,
+                    position=position,
+                    topic=topic,
+                    temperature=retry_temperature,
+                    top_k=retry_top_k,
+                    max_steps=max_steps,
+                    max_attempts=max_attempts,
+                    attempt_counter=attempt_counter,
+                )
 
-            if result is not None:
-                if (
-                    position < len(result)
-                    and self._character_matches(
-                        result[position],
-                        character,
-                    )
-                ):
-                    print("Status: Embedded successfully")
-                    return result
+                if result is not None:
+                    if (
+                        position < len(result)
+                        and self._character_matches(
+                            result[position],
+                            character,
+                        )
+                    ):
+                        print("Status: Embedded successfully")
+                        return result
 
-            print("Retrying...")
+                last_failure_reason = getattr(
+                    self,
+                    "_last_failure_reason",
+                    "candidate rejected or generation did not reach the position",
+                )
+                print(f"Candidate rejected: {last_failure_reason}")
+                print("Retrying same character and position...")
 
         raise RuntimeError(
             f"Unable to embed character '{character}' at position {position} "
-            "after all retry configurations."
+            f"after {max_retries} retry rounds and all retry configurations. "
+            f"Last rejection reason: {last_failure_reason}."
         )
 
     # ==================================================================
@@ -998,8 +1046,6 @@ class EmbedderLLM:
             raise ValueError(
                 "max_retries must be > 0"
             )
-
-        self.llm_generator._load_backend()
 
         # --------------------------------------------------------------
         # Start story.

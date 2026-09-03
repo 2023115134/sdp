@@ -15,6 +15,7 @@ to select tokens according to their probabilities.
 from __future__ import annotations
 
 import logging
+import os
 import random
 from dataclasses import dataclass
 from typing import Optional
@@ -81,6 +82,7 @@ class LLMGenerator:
 
         self._tokenizer = None
         self._model = None
+        self._logit_cache: dict[str, torch.Tensor] = {}
         self._candidate_cache: dict[tuple[str, int, float], list[TokenCandidate]] = {}
 
         logger.info(
@@ -119,6 +121,17 @@ class LLMGenerator:
                 "Transformers is not installed."
             ) from exc
 
+        # Avoid Windows CPU-threading crashes while materializing the
+        # model weights in the research prototype. This keeps the
+        # algorithm, configuration, and model selection unchanged.
+        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+        try:
+            torch.set_num_threads(1)
+            torch.set_num_interop_threads(1)
+        except RuntimeError:
+            pass
+
         logger.info(
             "Loading tokenizer: %s",
             self.model_name,
@@ -136,7 +149,8 @@ class LLMGenerator:
             )
 
             model = AutoModelForCausalLM.from_pretrained(
-                self.model_name
+                self.model_name,
+                low_cpu_mem_usage=True,
             )
 
         except Exception as exc:
@@ -419,16 +433,28 @@ class LLMGenerator:
         }
 
         # ----------------------------------------------------
-        # Get next-token logits
+        # Reuse the same prompt logits across retries and top-k
+        # variations. The underlying story context has not changed,
+        # so there is no need to run the model forward pass again
+        # merely to rescale or re-rank the same vocabulary.
         # ----------------------------------------------------
 
-        with torch.no_grad():
+        prompt_key = prompt
+        logits = self._logit_cache.get(prompt_key)
 
-            outputs = model(
-                **encoded
-            )
+        if logits is None:
+            with torch.no_grad():
+                outputs = model(
+                    **encoded
+                )
+                logits = outputs.logits[:, -1, :].detach().cpu()
 
-            logits = outputs.logits[:, -1, :]
+            if len(self._logit_cache) >= 128:
+                self._logit_cache.pop(next(iter(self._logit_cache)))
+
+            self._logit_cache[prompt_key] = logits
+        else:
+            logits = logits.to(self.device)
 
         # ----------------------------------------------------
         # Temperature scaling
