@@ -34,6 +34,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+import time
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -125,6 +126,11 @@ class EmbedderLLM:
             if character_map is not None
             else CharacterMap()
         )
+        self._embedding_stats = {
+            "llm_calls": 0,
+            "candidate_evaluations": 0,
+            "retries": 0,
+        }
 
     # ==================================================================
     # INPUT VALIDATION
@@ -623,6 +629,8 @@ class EmbedderLLM:
 
         for candidate in candidates:
 
+            self._embedding_stats["candidate_evaluations"] += 1
+
             token = candidate.token
 
             if not token:
@@ -656,12 +664,15 @@ class EmbedderLLM:
         character: str,
         position: int,
         topic: str,
+        continuation_candidates=None,
     ):
 
         valid = []
         rejection_reasons = []
 
         for candidate in candidates:
+
+            self._embedding_stats["candidate_evaluations"] += 1
 
             token = candidate.token
 
@@ -673,6 +684,8 @@ class EmbedderLLM:
 
             # Candidate must actually reach the target position.
             if len(new_story) <= position:
+                if continuation_candidates is not None:
+                    continuation_candidates.append(candidate)
                 rejection_reasons.append("token does not reach target position")
                 continue
 
@@ -741,11 +754,13 @@ class EmbedderLLM:
         candidates,
         position: int,
         topic: str,
+        continuation_candidates=None,
     ):
         valid = []
         rejection_reasons = []
 
         for candidate in candidates:
+            self._embedding_stats["candidate_evaluations"] += 1
             token = candidate.token
             if not token:
                 rejection_reasons.append("empty token")
@@ -754,6 +769,8 @@ class EmbedderLLM:
             new_story = story + token
 
             if len(new_story) <= position:
+                if continuation_candidates is not None:
+                    continuation_candidates.append(candidate)
                 rejection_reasons.append("token does not reach target position")
                 continue
 
@@ -827,6 +844,7 @@ class EmbedderLLM:
                 )
                 return None
 
+            self._embedding_stats["llm_calls"] += 1
             candidates = (
                 self.llm_generator
                 .get_next_token_candidates(
@@ -853,12 +871,14 @@ class EmbedderLLM:
             # the target position.
             # ----------------------------------------------------------
 
+            normal_candidates = []
             if character == " ":
                 selected = self._select_space_candidate(
                     story=story,
                     candidates=candidates,
                     position=position,
                     topic=topic,
+                    continuation_candidates=normal_candidates,
                 )
             else:
                 selected = self._select_embedding_candidate(
@@ -867,6 +887,7 @@ class EmbedderLLM:
                     character=character,
                     position=position,
                     topic=topic,
+                    continuation_candidates=normal_candidates,
                 )
 
             if selected is not None:
@@ -880,23 +901,6 @@ class EmbedderLLM:
             # Select a normal natural continuation, but only if it
             # does not cross the target.
             # ----------------------------------------------------------
-
-            normal_candidates = []
-
-            for candidate in candidates:
-
-                token = candidate.token
-
-                if not token:
-                    continue
-
-                new_story = story + token
-
-                # Never cross the target with a wrong character.
-                if len(new_story) > position:
-                    continue
-
-                normal_candidates.append(candidate)
 
             if not normal_candidates:
                 if not getattr(self, "_last_failure_reason", ""):
@@ -942,6 +946,8 @@ class EmbedderLLM:
 
         original_story = story
         last_failure_reason = "unknown embedding failure"
+        character_started = time.perf_counter()
+        character_stats_start = dict(self._embedding_stats)
         retry_schedule = [
             (0.70, 40), (0.70, 50), (0.70, 60),
             (0.75, 40), (0.75, 50), (0.75, 60),
@@ -949,11 +955,20 @@ class EmbedderLLM:
         ]
 
         for retry_round in range(1, max_retries + 1):
+            if retry_round > 1:
+                # A fresh candidate query is the explicit state change that
+                # justifies another pass through the paper schedule.
+                candidate_cache = getattr(self.llm_generator, "_candidate_cache", None)
+                if candidate_cache is None:
+                    break
+                candidate_cache.clear()
+
             for schedule_number, (retry_temperature, retry_top_k) in enumerate(
                 retry_schedule,
                 start=1,
             ):
                 retry_number = ((retry_round - 1) * len(retry_schedule)) + schedule_number
+                self._embedding_stats["retries"] += 1
                 print(
                     f"Retry {retry_number}: T={retry_temperature:.2f} "
                     f"k={retry_top_k}"
@@ -982,6 +997,14 @@ class EmbedderLLM:
                         )
                     ):
                         print("Status: Embedded successfully")
+                        elapsed = time.perf_counter() - character_started
+                        print(
+                            "Character stats: "
+                            f"LLM calls={self._embedding_stats['llm_calls'] - character_stats_start['llm_calls']}, "
+                            f"candidate evaluations={self._embedding_stats['candidate_evaluations'] - character_stats_start['candidate_evaluations']}, "
+                            f"retries={self._embedding_stats['retries'] - character_stats_start['retries']}, "
+                            f"time={elapsed:.2f}s"
+                        )
                         return result
 
                 last_failure_reason = getattr(
@@ -992,6 +1015,14 @@ class EmbedderLLM:
                 print(f"Candidate rejected: {last_failure_reason}")
                 print("Retrying same character and position...")
 
+        elapsed = time.perf_counter() - character_started
+        print(
+            "Character stats: "
+            f"LLM calls={self._embedding_stats['llm_calls'] - character_stats_start['llm_calls']}, "
+            f"candidate evaluations={self._embedding_stats['candidate_evaluations'] - character_stats_start['candidate_evaluations']}, "
+            f"retries={self._embedding_stats['retries'] - character_stats_start['retries']}, "
+            f"time={elapsed:.2f}s"
+        )
         raise RuntimeError(
             f"Unable to embed character '{character}' at position {position} "
             f"after {max_retries} retry rounds and all retry configurations. "
@@ -1068,6 +1099,11 @@ class EmbedderLLM:
                 )
 
         attempt_counter = [0]
+        self._embedding_stats = {
+            "llm_calls": 0,
+            "candidate_evaluations": 0,
+            "retries": 0,
+        }
 
         # --------------------------------------------------------------
         # Embed every character sequentially.
