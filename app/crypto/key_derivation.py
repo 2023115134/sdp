@@ -1,9 +1,4 @@
-"""PBKDF2-based key derivation for the cryptography phase.
-
-This module intentionally isolates password-to-key derivation from the
-existing Phase 1 SHAKE128 and LLM pipeline. It provides two independent
-256-bit keys, dk1 and dk2, from a passphrase and a per-message salt.
-"""
+"""Derive cryptographic keys from a password and salt with PBKDF2."""
 
 from __future__ import annotations
 
@@ -18,12 +13,7 @@ SaltLike = Union[str, bytes, bytearray]
 
 
 def _normalize_password(password: PasswordLike) -> bytes:
-    """Normalize a user password to bytes.
-
-    Empty passwords are rejected because PBKDF2 with an empty password would
-    silently accept invalid input and create ambiguous semantics in the wider
-    protocol.
-    """
+    """Convert a non-empty password to bytes."""
 
     if password is None:
         raise TypeError("password must be str, bytes, or bytearray")
@@ -42,11 +32,7 @@ def _normalize_password(password: PasswordLike) -> bytes:
 
 
 def _normalize_salt(salt: SaltLike) -> bytes:
-    """Normalize a salt to bytes.
-
-    A random salt is required for the protocol. A zero-length salt is rejected
-    because it does not provide meaningful domain separation.
-    """
+    """Convert a non-empty salt to bytes."""
 
     if salt is None:
         raise TypeError("salt must be str, bytes, or bytearray")
@@ -65,11 +51,7 @@ def _normalize_salt(salt: SaltLike) -> bytes:
 
 
 def generate_salt(length: int = DEFAULT_PBKDF2_CONFIG.salt_length) -> bytes:
-    """Generate a cryptographically secure random salt.
-
-    The caller should store the salt alongside the derived keys so the same
-    password can be re-derived for validation or future cryptographic use.
-    """
+    """Generate a random salt of the configured length."""
 
     if length <= 0:
         raise ValueError("salt length must be > 0")
@@ -78,25 +60,7 @@ def generate_salt(length: int = DEFAULT_PBKDF2_CONFIG.salt_length) -> bytes:
 
 
 def derive_keys(password: PasswordLike, salt: SaltLike) -> tuple[bytes, bytes]:
-    """Derive two independent 256-bit keys using PBKDF2-HMAC-SHA256.
-
-    The implementation derives a single PBKDF2 stream of length 64 bytes and
-    splits it into two 32-byte keys:
-
-        dk1 = derived_key[:32]
-        dk2 = derived_key[32:64]
-
-    This is simpler and more robust than separate PBKDF2 calls because it keeps
-    the password and salt interaction within the same keyed expansion while
-    creating two independent keys with a single deterministic pool of output.
-
-    Args:
-        password: Password or passphrase, as str/bytes.
-        salt: Salt bytes, as str/bytes.
-
-    Returns:
-        A tuple (dk1, dk2), each exactly 32 bytes long.
-    """
+    """Derive 64 bytes with PBKDF2-HMAC-SHA256 and split them into two keys."""
 
     normalized_password = _normalize_password(password)
     normalized_salt = _normalize_salt(salt)

@@ -30,7 +30,7 @@ def test_embedding():
     
     generator = PositionGenerator(offset_do=32, max_story_length=1000)
     positions = generator.generate_for_message(
-        key="test-key",
+        key_material="test-key",
         message_length=len(mapped),
     )
     print(f"Positions: {positions}")

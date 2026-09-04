@@ -27,10 +27,6 @@ from app.config import DEFAULT_LLM_CONFIG
 logger = logging.getLogger(__name__)
 
 
-# ============================================================
-# TOKEN CANDIDATE
-# ============================================================
-
 @dataclass
 class TokenCandidate:
     """
@@ -41,10 +37,6 @@ class TokenCandidate:
     token: str
     probability: float
 
-
-# ============================================================
-# LLM GENERATOR
-# ============================================================
 
 class LLMGenerator:
     """
@@ -92,10 +84,6 @@ class LLMGenerator:
             self.device,
             self.seed,
         )
-
-    # ========================================================
-    # LOAD MODEL
-    # ========================================================
 
     def _load_backend(self) -> None:
         """
@@ -207,10 +195,6 @@ class LLMGenerator:
             "Loaded model %s successfully",
             self.model_name,
         )
-
-    # ========================================================
-    # GENERATE TEXT
-    # ========================================================
 
     def generate(
         self,
@@ -361,10 +345,6 @@ class LLMGenerator:
         )
 
         return generated_text.strip()
-
-    # ========================================================
-    # NEXT TOKEN CANDIDATES
-    # ========================================================
 
     def get_next_token_candidates(
         self,

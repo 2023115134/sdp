@@ -80,15 +80,15 @@ def test_invalid_key_material_rejected():
 
 
 def test_existing_phase1_behavior_still_passes():
-    generator = PositionGenerator(chunk_size=5, offset_do=32, max_story_length=1000)
-    positions_a = generator.generate("secret-key", 20)
-    positions_b = generator.generate("secret-key", 20)
+    generator = PositionGenerator(min_gap=5, offset_do=32, max_story_length=1000)
+    positions_a = generator.generate(key_material="secret-key", number_of_positions=20)
+    positions_b = generator.generate(key_material="secret-key", number_of_positions=20)
     assert positions_a == positions_b
 
 
-def test_d0_and_chunk_size_behavior_remains_unchanged():
-    generator = PositionGenerator(chunk_size=5, offset_do=32, max_story_length=1000)
-    positions = generator.generate("demo-key", 15)
+def test_offset_and_min_gap_behavior_remains_consistent():
+    generator = PositionGenerator(min_gap=5, offset_do=32, max_story_length=1000)
+    positions = generator.generate(key_material="demo-key", number_of_positions=15)
     assert positions == sorted(positions)
     assert len(positions) == len(set(positions))
     assert all(position >= 32 for position in positions)

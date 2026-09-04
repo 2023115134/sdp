@@ -12,6 +12,7 @@ This module stays independent from the LLM and position-generation
 components.
 """
 
+
 from __future__ import annotations
 
 from typing import Union
@@ -19,28 +20,6 @@ from typing import Union
 
 class CharacterMap:
     """Reversible h4-based byte mapping."""
-
-    # h4 alphabet.
-    #
-    # Index of each character represents its 4-bit value:
-    #
-    # 0 -> SPACE
-    # 1 -> E
-    # 2 -> T
-    # 3 -> A
-    # 4 -> O
-    # 5 -> N
-    # 6 -> I
-    # 7 -> S
-    # 8 -> R
-    # 9 -> H
-    # 10 -> D
-    # 11 -> L
-    # 12 -> U
-    # 13 -> C
-    # 14 -> M
-    # 15 -> F
-
     ALPHABET = " ETAONISRHDLUCMF"
 
     # Create reverse lookup table.
@@ -127,21 +106,6 @@ class CharacterMap:
                 "Encoded h4 text does not decode to valid UTF-8."
             ) from exc
 
-    def reconstruct(self, characters: str) -> str:
-        """Compatibility alias used by older call sites."""
-
-        return self.decode(characters)
-
-    def values_to_text(self, characters: str) -> str:
-        """Compatibility alias used by older call sites."""
-
-        return self.decode(characters)
-
-    def unmap(self, characters: str) -> str:
-        """Compatibility alias used by older call sites."""
-
-        return self.decode(characters)
-
     def to_values(self, characters: str) -> list[int]:
         """Convert h4 characters to their 4-bit integer values."""
 
@@ -196,93 +160,3 @@ class CharacterMap:
         return "".join(characters)
 
 
-# ----------------------------------------------------------------------
-# SIMPLE TEST
-# ----------------------------------------------------------------------
-
-if __name__ == "__main__":
-
-    mapping = CharacterMap()
-
-    print("=" * 60)
-    print("h4 CHARACTER MAP TEST")
-    print("=" * 60)
-
-    print("\nAlphabet:")
-    print(repr(mapping.ALPHABET))
-
-    print("\nCharacter -> value:")
-
-    for character in mapping.ALPHABET:
-
-        printable = (
-            "SPACE"
-            if character == " "
-            else character
-        )
-
-        print(
-            f"{printable:>5} -> "
-            f"{mapping.CHAR_TO_VALUE[character]}"
-        )
-
-    # --------------------------------------------------------------
-    # TEST 1
-    # --------------------------------------------------------------
-
-    message = "HELLO"
-
-    print("\nOriginal:")
-    print(message)
-
-    mapped = mapping.encode(message)
-
-    print("\nMapped:")
-    print(mapped)
-
-    recovered = mapping.decode(mapped)
-
-    print("\nRecovered:")
-    print(recovered)
-
-    print(
-        "\nRound-trip:",
-        recovered == message
-    )
-
-    # --------------------------------------------------------------
-    # TEST 2
-    # --------------------------------------------------------------
-
-    print("\nTesting value conversion:")
-
-    values = mapping.to_values(mapped)
-
-    print("Values:")
-    print(values)
-
-    reconstructed = mapping.from_values(values)
-
-    print("Reconstructed:")
-    print(reconstructed)
-
-    print(
-        "\nValue round-trip:",
-        reconstructed == mapped
-    )
-
-    # --------------------------------------------------------------
-    # FINAL VALIDATION
-    # --------------------------------------------------------------
-
-    print("\n" + "=" * 60)
-
-    if (
-        recovered == message
-        and reconstructed == mapped
-    ):
-        print("h4 mapping test: PASS")
-    else:
-        print("h4 mapping test: FAIL")
-
-    print("=" * 60)

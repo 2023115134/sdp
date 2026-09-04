@@ -51,10 +51,6 @@ class Extractor:
             else CharacterMap()
         )
 
-    # ================================================================
-    # READ CHARACTERS
-    # ================================================================
-
     @staticmethod
     def _read_characters(
         cover_text: str,
@@ -94,10 +90,6 @@ class Extractor:
 
         return "".join(characters)
 
-    # ================================================================
-    # DIRECT EXTRACTION
-    # ================================================================
-
     @staticmethod
     def extract(
         cover_text: str,
@@ -110,10 +102,6 @@ class Extractor:
             positions=positions,
             strict=False,
         )
-
-    # ================================================================
-    # FULL RECOVERY
-    # ================================================================
 
     def recover(
         self,
@@ -153,7 +141,7 @@ class Extractor:
         # legacy path continues to derive positions from the shared key.
         if positions is None:
             positions = self.position_generator.generate_for_message(
-                key=key,
+                key_material=key,
                 message_length=message_length,
             )
         elif len(positions) != message_length:
@@ -255,7 +243,7 @@ def _run_test() -> None:
     # ------------------------------------------------------------
 
     positions = generator.generate_for_message(
-        key=key,
+        key_material=key,
         message_length=len(hidden),
     )
 

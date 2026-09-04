@@ -27,8 +27,11 @@ def run_experiment() -> None:
     print("Input characters:", secret)
     print("Mapped characters:", encoded)
 
-    position_generator = PositionGenerator(chunk_size=5, offset_do=32, max_story_length=2000)
-    positions = position_generator.generate("phase1-secret-key", len(encoded))
+    position_generator = PositionGenerator(min_gap=5, offset_do=32, max_story_length=2000)
+    positions = position_generator.generate(
+        number_of_positions=len(encoded),
+        key_material="phase1-secret-key",
+    )
     print("Generated positions:", positions)
 
     llm_generator = LLMGenerator()

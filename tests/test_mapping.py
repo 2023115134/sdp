@@ -27,6 +27,13 @@ def test_mapping_rejects_invalid_characters():
         mapper.decode("G")
 
 
+def test_value_conversion_round_trip():
+    mapper = CharacterMap()
+    mapped = mapper.encode("HELLO")
+
+    assert mapper.from_values(mapper.to_values(mapped)) == mapped
+
+
 def test_generator_model_error_is_actionable():
     generator = LLMGenerator(model_name="definitely-not-a-real-model-name-xyz")
     with pytest.raises(RuntimeError, match="LLM_MODEL_NAME|cached local model|internet access"):

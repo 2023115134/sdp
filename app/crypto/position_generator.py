@@ -1,40 +1,18 @@
-"""
-Deterministic SHAKE128-based position generation.
-
-Phase 1 implementation for the LLM steganography prototype.
-
-Positions are generated deterministically from the key using SHAKE128.
-
-For LLM-based embedding, a minimum gap can be enforced between
-embedding positions so that consecutive secret characters are not
-too close together for the language model to satisfy.
-"""
+"""Generate deterministic embedding positions with SHAKE128."""
 
 from __future__ import annotations
 
 import hashlib
 class PositionGenerator:
-    """Generate deterministic, unique embedding positions."""
+    """Generate deterministic positions subject to configured gaps."""
 
     def __init__(
         self,
-        chunk_size: int | None = None,
         offset_do: int = 32,
         max_story_length: int = 100_000,
         min_gap: int = 20,
         bit_chunk_size: int = 5,
     ) -> None:
-
-        if chunk_size is not None:
-
-            if chunk_size < 1:
-                raise ValueError(
-                    "chunk_size must be >= 1"
-                )
-
-            # Backwards-compatible alias used by older callers and tests.
-            min_gap = chunk_size
-
         if offset_do < 0:
             raise ValueError(
                 "offset_do must be >= 0"
@@ -60,60 +38,33 @@ class PositionGenerator:
                 "bit_chunk_size must be >= 1"
             )
 
-        self.chunk_size = (
-            chunk_size
-            if chunk_size is not None
-            else min_gap
-        )
         self.offset_do = offset_do
         self.max_story_length = max_story_length
         self.min_gap = min_gap
         self.bit_chunk_size = bit_chunk_size
-        self._legacy_sampling = chunk_size is not None
-
-    # ==================================================================
-    # KEY NORMALIZATION
-    # ==================================================================
 
     @staticmethod
     def _normalize_key(
         key: str | bytes | int
     ) -> bytes:
 
-        if isinstance(key, bytes):
-
-            if not key:
-                raise ValueError(
-                    "key must not be empty"
-                )
-
-            return key
-
-        if isinstance(key, str):
-
-            if not key:
-                raise ValueError(
-                    "key must not be empty"
-                )
-
-            return key.encode("utf-8")
-
         if isinstance(key, int):
-
             if key < 0:
                 raise ValueError(
                     "integer key must be >= 0"
                 )
+            key_bytes = str(key).encode("utf-8")
+        elif isinstance(key, str):
+            key_bytes = key.encode("utf-8")
+        elif isinstance(key, bytes):
+            key_bytes = key
+        else:
+            raise TypeError("key must be str, bytes, or int")
 
-            return str(key).encode("utf-8")
+        if not key_bytes:
+            raise ValueError("key must not be empty")
 
-        raise TypeError(
-            "key must be str, bytes, or int"
-        )
-
-    # ==================================================================
-    # SHAKE128
-    # ==================================================================
+        return key_bytes
 
     @staticmethod
     def _shake128_value(
@@ -152,10 +103,6 @@ class PositionGenerator:
             signed=False,
         )
 
-    # ==================================================================
-    # SINGLE POSITION
-    # ==================================================================
-
     def _step_size(
         self,
         key_material: bytes,
@@ -167,57 +114,12 @@ class PositionGenerator:
             % chunk_range
         )
 
-    def _candidate_position(
-        self,
-        key_material: bytes,
-        counter: int,
-    ) -> int:
-        available_range = self.max_story_length - self.offset_do
-        return self.offset_do + (
-            self._shake128_value(key_material, counter)
-            % available_range
-        )
-
-    # ==================================================================
-    # POSITION VALIDATION
-    # ==================================================================
-
-    def _is_valid_gap(
-        self,
-        candidate: int,
-        positions: list[int],
-    ) -> bool:
-        """
-        Check whether candidate maintains the required
-        minimum distance from all existing positions.
-        """
-
-        for position in positions:
-
-            if abs(candidate - position) < self.min_gap:
-
-                return False
-
-        return True
-
-    # ==================================================================
-    # POSITION GENERATION
-    # ==================================================================
-
     def generate(
         self,
-        key: str | bytes | int | None = None,
         number_of_positions: int = 0,
         key_material: str | bytes | int | None = None,
     ) -> list[int]:
-        """
-        Generate deterministic unique embedding positions.
-
-        The positions are generated using SHAKE128 and must satisfy the
-        configured minimum gap. The optional key_material parameter allows the
-        Phase-2 flow to pass PBKDF2-derived dk2 bytes directly while preserving
-        the legacy key-based interface used by existing Phase-1 callers.
-        """
+        """Generate deterministic positions from key material."""
 
         if number_of_positions < 0:
 
@@ -229,38 +131,15 @@ class PositionGenerator:
 
             return []
 
-        if key_material is not None:
-            effective_key = key_material
-        elif key is not None:
-            effective_key = key
-        else:
-            raise ValueError("key or key_material is required")
+        if key_material is None:
+            raise ValueError("key_material is required")
 
-        key_material_bytes = self._normalize_key(
-            effective_key
-        )
-
-        if self._legacy_sampling:
-            positions: list[int] = []
-            counter = 0
-            while len(positions) < number_of_positions:
-                candidate = self._candidate_position(
-                    key_material_bytes,
-                    counter,
-                )
-                counter += 1
-                if self._is_valid_gap(candidate, positions):
-                    positions.append(candidate)
-            return sorted(positions)
+        key_material_bytes = self._normalize_key(key_material)
 
         available_length = (
             self.max_story_length
             - self.offset_do
         )
-
-        # --------------------------------------------------------------
-        # Maximum number of positions possible with min_gap.
-        # --------------------------------------------------------------
 
         max_possible = (
             (available_length - 1)
@@ -300,19 +179,12 @@ class PositionGenerator:
 
         return positions
 
-    # ==================================================================
-    # MESSAGE HELPER
-    # ==================================================================
-
     def generate_for_message(
         self,
-        key: str | bytes | int | None = None,
         message_length: int = 0,
         key_material: str | bytes | int | None = None,
     ) -> list[int]:
-        """
-        Generate exactly one position per embedded character.
-        """
+        """Generate one position per message character."""
 
         if message_length < 0:
 
@@ -321,7 +193,6 @@ class PositionGenerator:
             )
 
         return self.generate(
-            key=key,
             number_of_positions=message_length,
             key_material=key_material,
         )
@@ -331,27 +202,14 @@ def generate_positions(
     key_material: str | bytes | int | None = None,
     number_of_positions: int = 0,
     *,
-    key: str | bytes | int | None = None,
-    chunk_size: int | None = None,
     offset_do: int = 32,
     max_story_length: int = 100_000,
     min_gap: int = 20,
     bit_chunk_size: int = 5,
 ) -> list[int]:
-    """Generate deterministic SHAKE128 positions from key material.
-
-    This helper is intended for the Phase-2 flow where dk2 from PBKDF2 is used as
-    the SHAKE128 key material. It preserves the legacy PositionGenerator
-    behavior when key_material is absent by accepting the older key argument.
-    """
-
-    if key_material is None:
-        if key is None:
-            raise ValueError("key_material or key is required")
-        key_material = key
+    """Generate positions using the functional API."""
 
     generator = PositionGenerator(
-        chunk_size=chunk_size,
         offset_do=offset_do,
         max_story_length=max_story_length,
         min_gap=min_gap,
@@ -362,172 +220,6 @@ def generate_positions(
         key_material=key_material,
         number_of_positions=number_of_positions,
     )
-
-
-# ======================================================================
-# TESTS
-# ======================================================================
-
-def _run_tests() -> None:
-
-    print("=" * 70)
-    print("SHAKE128 POSITION GENERATOR TEST")
-    print("=" * 70)
-
-    generator = PositionGenerator(
-        offset_do=32,
-        max_story_length=1000,
-        min_gap=20,
-    )
-
-    key = "test-secret-key"
-
-    # ------------------------------------------------------------------
-    # Generate positions
-    # ------------------------------------------------------------------
-
-    positions = generator.generate(
-        key=key,
-        number_of_positions=5,
-    )
-
-    print("\nGenerated positions:")
-    print(positions)
-
-    # ------------------------------------------------------------------
-    # Check number
-    # ------------------------------------------------------------------
-
-    print(
-        "\nNumber of positions:",
-        len(positions),
-    )
-
-    # ------------------------------------------------------------------
-    # Check uniqueness
-    # ------------------------------------------------------------------
-
-    unique = (
-        len(positions)
-        == len(set(positions))
-    )
-
-    print(
-        "All positions unique:",
-        unique,
-    )
-
-    # ------------------------------------------------------------------
-    # Check range
-    # ------------------------------------------------------------------
-
-    valid_range = all(
-        generator.offset_do
-        <= position
-        < generator.max_story_length
-        for position in positions
-    )
-
-    print(
-        "All positions in valid range:",
-        valid_range,
-    )
-
-    # ------------------------------------------------------------------
-    # Check minimum gap
-    # ------------------------------------------------------------------
-
-    gaps = [
-        positions[i + 1] - positions[i]
-        for i in range(len(positions) - 1)
-    ]
-
-    gap_test = all(
-        gap >= generator.min_gap
-        for gap in gaps
-    )
-
-    print(
-        "Gaps:",
-        gaps,
-    )
-
-    print(
-        "Minimum gap satisfied:",
-        gap_test,
-    )
-
-    # ------------------------------------------------------------------
-    # Determinism
-    # ------------------------------------------------------------------
-
-    positions_again = generator.generate(
-        key=key,
-        number_of_positions=5,
-    )
-
-    deterministic = (
-        positions
-        == positions_again
-    )
-
-    print(
-        "Same key gives same positions:",
-        deterministic,
-    )
-
-    # ------------------------------------------------------------------
-    # Different key
-    # ------------------------------------------------------------------
-
-    different_positions = generator.generate(
-        key="different-secret-key",
-        number_of_positions=5,
-    )
-
-    different_key = (
-        positions
-        != different_positions
-    )
-
-    print(
-        "Different key changes positions:",
-        different_key,
-    )
-
-    # ------------------------------------------------------------------
-    # Final result
-    # ------------------------------------------------------------------
-
-    all_tests_passed = all(
-        [
-            unique,
-            valid_range,
-            gap_test,
-            deterministic,
-            different_key,
-        ]
-    )
-
-    print("\n" + "=" * 70)
-
-    if all_tests_passed:
-
-        print(
-            "POSITION GENERATOR TEST: PASS"
-        )
-
-    else:
-
-        print(
-            "POSITION GENERATOR TEST: FAIL"
-        )
-
-    print("=" * 70)
-
-
-if __name__ == "__main__":
-    _run_tests()
 
 
 __all__ = [

@@ -68,33 +68,33 @@ def test_generator_model_error_is_actionable() -> None:
 
 def test_position_reproducibility() -> None:
     generator = PositionGenerator(
-        chunk_size=5,
+        min_gap=5,
         offset_do=32,
         max_story_length=1000,
     )
-    positions_a = generator.generate("secret-key", 20)
-    positions_b = generator.generate("secret-key", 20)
+    positions_a = generator.generate(key_material="secret-key", number_of_positions=20)
+    positions_b = generator.generate(key_material="secret-key", number_of_positions=20)
     assert positions_a == positions_b
 
 
 def test_different_keys_produce_different_positions() -> None:
     generator = PositionGenerator(
-        chunk_size=5,
+        min_gap=5,
         offset_do=32,
         max_story_length=2000,
     )
-    positions_a = generator.generate("key-a", 20)
-    positions_b = generator.generate("key-b", 20)
+    positions_a = generator.generate(key_material="key-a", number_of_positions=20)
+    positions_b = generator.generate(key_material="key-b", number_of_positions=20)
     assert positions_a != positions_b
 
 
 def test_position_ordering_is_sorted() -> None:
     generator = PositionGenerator(
-        chunk_size=5,
+        min_gap=5,
         offset_do=32,
         max_story_length=5000,
     )
-    positions = generator.generate("demo-key", 15)
+    positions = generator.generate(key_material="demo-key", number_of_positions=15)
     assert positions == sorted(positions)
     assert len(positions) == len(set(positions))
 
@@ -111,7 +111,10 @@ def test_key_dependent_extraction_validation() -> None:
     generator = PositionGenerator(offset_do=32, max_story_length=2000)
     key = "test-secret-key"
     hidden = mapping.encode("HELLO")
-    positions = generator.generate_for_message(key, len(hidden))
+    positions = generator.generate_for_message(
+        key_material=key,
+        message_length=len(hidden),
+    )
 
     cover = ["x"] * (max(positions) + 1)
     for position, character in zip(positions, hidden):
@@ -138,10 +141,10 @@ def test_naturalness_summary_is_data_driven() -> None:
 def test_embedder_success_and_failure_paths() -> None:
     mapper = CharacterMap()
     positions = PositionGenerator(
-        chunk_size=5,
+        min_gap=5,
         offset_do=32,
         max_story_length=100,
-    ).generate("key", 5)
+    ).generate(key_material="key", number_of_positions=5)
     story = "the old lighthouse watched the black sea from the cliff"
 
     encoded = mapper.encode("ABCD")

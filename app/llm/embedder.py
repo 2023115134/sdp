@@ -44,10 +44,6 @@ from app.llm.generator import LLMGenerator
 logger = logging.getLogger(__name__)
 
 
-# ======================================================================
-# RESULT
-# ======================================================================
-
 @dataclass
 class EmbeddingResult:
     story: str
@@ -55,10 +51,6 @@ class EmbeddingResult:
     positions: list[int]
     attempts: int
 
-
-# ======================================================================
-# EMBEDDER
-# ======================================================================
 
 class EmbedderLLM:
 
@@ -132,10 +124,6 @@ class EmbedderLLM:
             "retries": 0,
         }
 
-    # ==================================================================
-    # INPUT VALIDATION
-    # ==================================================================
-
     @staticmethod
     def _validate_inputs(
         topic: str,
@@ -183,10 +171,6 @@ class EmbedderLLM:
                 )
 
             previous = position
-
-    # ==================================================================
-    # CHARACTER MATCH
-    # ==================================================================
 
     @staticmethod
     def _character_matches(
@@ -239,10 +223,6 @@ class EmbedderLLM:
             cover_text[position].upper() == expected.upper()
             for position, expected in zip(positions, mapped)
         )
-
-    # ==================================================================
-    # NATURALNESS OF ONE CANDIDATE
-    # ==================================================================
 
     def _candidate_naturalness(
         self,
@@ -343,10 +323,6 @@ class EmbedderLLM:
 
         return max(0.0, min(1.0, score))
 
-    # ==================================================================
-    # FINAL NATURALNESS VALIDATION
-    # ==================================================================
-
     @staticmethod
     def _needs_completion(story: str) -> bool:
 
@@ -359,16 +335,6 @@ class EmbedderLLM:
         last = stripped[-1]
 
         return last not in ".!?\"'”’"
-
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _is_sentence_complete(story: str) -> bool:
-        stripped = story.strip()
-        if not stripped:
-            return False
-        last = stripped[-1]
-        return last in ".!?\"'”’"
 
     @staticmethod
     def _is_repetitive_continuation(story: str, token: str) -> bool:
@@ -576,10 +542,6 @@ class EmbedderLLM:
             ended += "."
         return ended
 
-    # ==================================================================
-    # SCORE CANDIDATE
-    # ==================================================================
-
     def _score_candidate(
         self,
         story: str,
@@ -609,10 +571,6 @@ class EmbedderLLM:
             self.PROBABILITY_WEIGHT * probability_score
             + self.NATURALNESS_WEIGHT * naturalness
         ) / (self.PROBABILITY_WEIGHT + self.NATURALNESS_WEIGHT)
-
-    # ==================================================================
-    # SELECT NORMAL TOKEN
-    # ==================================================================
 
     def _select_normal_candidate(
         self,
@@ -652,10 +610,6 @@ class EmbedderLLM:
                 best = candidate
 
         return best
-
-    # ==================================================================
-    # SELECT EMBEDDING CANDIDATE
-    # ==================================================================
 
     def _select_embedding_candidate(
         self,
@@ -743,10 +697,6 @@ class EmbedderLLM:
         )
 
         return valid[0]
-
-    # ==================================================================
-    # SELECT SPACE CANDIDATE
-    # ==================================================================
 
     def _select_space_candidate(
         self,

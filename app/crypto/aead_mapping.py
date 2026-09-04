@@ -1,8 +1,7 @@
-"""Adapters for converting AEAD output into the paper's h4 representation.
+"""Adapters for converting AEAD output into the project's h4 representation.
 
-This module intentionally does not alter the AEAD implementation or the Phase-1
-mapping API. It provides a boundary adapter between the authenticated encrypted
-representation and the same reversible h4 alphabet.
+This module provides a boundary adapter between the authenticated encrypted
+representation and the reversible h4 alphabet.
 
 The Phase-2 preprocessing is:
 
@@ -22,13 +21,7 @@ from app.crypto.mapping import CharacterMap
 
 
 def aead_to_character_sequence(enc: bytes | bytearray | memoryview) -> str:
-    """Convert AEAD Enc = Tag || Ciphertext into the existing h4 character alphabet.
-
-    Each byte contributes exactly two h4 characters: one for its high nibble and
-    one for its low nibble. This is deliberately separate from
-    ``CharacterMap.encode``, whose Phase-1 byte-to-two-nibbles behavior must stay
-    unchanged for its existing callers.
-    """
+    """Convert AEAD Enc = Tag || Ciphertext into h4 characters."""
 
     if isinstance(enc, memoryview):
         enc_bytes = enc.tobytes()
@@ -37,14 +30,7 @@ def aead_to_character_sequence(enc: bytes | bytearray | memoryview) -> str:
     else:
         raise TypeError("enc must be bytes-like")
 
-    character_map = CharacterMap()
-    mapped: list[str] = []
-
-    for byte in enc_bytes:
-        mapped.append(character_map.VALUE_TO_CHAR[(byte >> 4) & 0x0F])
-        mapped.append(character_map.VALUE_TO_CHAR[byte & 0x0F])
-
-    return "".join(mapped)
+    return CharacterMap().encode(enc_bytes)
 
 
 def character_sequence_to_aead(mapped: str) -> bytes:
@@ -56,8 +42,7 @@ def character_sequence_to_aead(mapped: str) -> bytes:
     if len(mapped) % 2 != 0:
         raise ValueError("Mapped h4 sequence must contain an even number of characters.")
 
-    character_map = CharacterMap()
-    values = character_map.to_values(mapped)
+    values = CharacterMap().to_values(mapped)
     return bytes(
         (high << 4) | low
         for high, low in zip(values[::2], values[1::2])
