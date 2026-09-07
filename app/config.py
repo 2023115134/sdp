@@ -21,7 +21,9 @@ class LLMConfig:
     max_new_tokens_default: int = 128
     temperature_default: float = 0.7
     top_k_default: int = 40
-    device: str = "cpu"
+    # "auto" selects the fastest backend available at runtime. Set
+    # LLM_DEVICE to "cpu", "cuda", "cuda:0", or "mps" to override it.
+    device: str = os.getenv("LLM_DEVICE", "auto")
     seed: int | None = None
 
 

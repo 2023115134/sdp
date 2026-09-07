@@ -65,3 +65,24 @@ def test_embedder_only_appends_final_tail_after_embedded_position():
     assert result.story[:4] == "catA"
     assert result.story[3] == "A"
     assert result.story.endswith(".") or result.story.endswith("!") or result.story.endswith("?")
+
+
+def test_normal_candidate_prefers_fresh_text_but_keeps_repetitive_fallback():
+    embedder = EmbedderLLM()
+    repeated = _FakeCandidate(" story", probability=0.99)
+    fresh = _FakeCandidate(" river", probability=0.5)
+
+    selected = embedder._select_normal_candidate(
+        story="The story story story story story story.",
+        candidates=[repeated, fresh],
+        topic="a journey",
+    )
+
+    assert selected is fresh
+
+    only_option = embedder._select_normal_candidate(
+        story="The story story story story story.",
+        candidates=[repeated],
+        topic="a journey",
+    )
+    assert only_option is repeated

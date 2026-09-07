@@ -57,7 +57,7 @@ Before running the project, the laptop should have:
 - Python 3.11 installed and available as `python`
 - Internet access for installing packages and downloading the default Hugging Face model
 - At least 8 GB RAM and approximately 5 GB of free disk space for the Python packages, model files, and cache
-- A CPU is sufficient; an NVIDIA GPU is optional and is not required by this Phase 1 prototype
+- A CPU is sufficient; an NVIDIA GPU is optional. When a CUDA-enabled PyTorch build is installed, the generator selects CUDA automatically.
 
 The complete Python package list is maintained in [requirements.txt](requirements.txt). Check that file before installation and install it with the command below.
 
@@ -83,8 +83,8 @@ python -m venv .venv
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
-.\.venv\Scripts\Activate.ps1
-```
+
+```.\.venv\Scripts\Activate.ps1
 
 The prompt should begin with `(.venv)` after activation.
 
@@ -171,7 +171,9 @@ The final successful line is:
 END-TO-END TEST: PASS
 ```
 
-The demo runs Qwen on the CPU. Longer secrets and fixed-position candidate searches can take time. Do not start multiple demo processes at the same time.
+The demo automatically uses the best available backend. Set `LLM_DEVICE=cpu` to force CPU execution, or `LLM_DEVICE=cuda` / `LLM_DEVICE=cuda:0` to request a specific CUDA device. If CUDA is requested but unavailable, the generator logs a warning and falls back to CPU. Longer secrets and fixed-position candidate searches can take time. Do not start multiple demo processes at the same time.
+
+The active backend is logged when the model loads. To use an NVIDIA GPU, install a CUDA-enabled PyTorch wheel for the selected Python environment; `torch>=2.2.0` alone may resolve to a CPU-only wheel on some platforms. `LLM_CPU_THREADS` can optionally set the number of CPU threads when CPU execution is selected.
 
 ### Candidate naturalness scoring
 

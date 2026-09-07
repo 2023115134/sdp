@@ -29,6 +29,7 @@ from app.crypto.aead import decrypt, encrypt
 from app.crypto.aead_mapping import aead_to_character_sequence, character_sequence_to_aead
 from app.crypto.key_derivation import derive_keys, generate_salt
 from app.crypto.mapping import CharacterMap
+from app.evaluation.naturalness import summarize_cover_text
 from app.crypto.position_generator import generate_positions
 from app.extraction.extractor import Extractor
 from app.llm.embedder import EmbedderLLM
@@ -148,7 +149,7 @@ def main() -> None:
         temperature=0.7,
         top_k=20,
         max_new_tokens=32,
-        max_attempts=2500,
+        max_attempts=15000,
         max_retries=3,
     )
     embed_seconds = time.perf_counter() - start
@@ -164,9 +165,10 @@ def main() -> None:
         cover_text=result.story,
         positions=positions,
     )
+    canonical_extracted = extracted.upper()
     print("[6/8] Extracted payload:", extracted)
     print("[6/8] Extracted sequence:", repr(extracted))
-    recovered_enc = character_sequence_to_aead(extracted)
+    recovered_enc = character_sequence_to_aead(canonical_extracted)
     print("[6/8] Recovered Enc:", recovered_enc.hex())
     print("[6/8] Enc round-trip:", recovered_enc == enc)
 
@@ -182,13 +184,47 @@ def main() -> None:
     print("[7/8] Recovered plaintext:", recovered_plaintext.decode("utf-8"))
 
     print("\n[8/8] Verification")
-    pass_state = (
+    payload_state = (
         recovered_plaintext == plaintext
-        and extracted == mapped
+        and canonical_extracted == mapped
         and recovered_enc == enc
     )
+    naturalness_state = embedder._validate_cover_naturalness(
+        story=result.story,
+        topic=topic,
+    )
+    naturalness_summary = summarize_cover_text(result.story)
+    cover_state = all(naturalness_state.values())
+    overall_state = payload_state and cover_state
+
+    print("Payload integrity:", "PASS" if payload_state else "FAIL")
+    print("Cover naturalness:", "PASS" if cover_state else "FAIL")
+    print("Naturalness checks:")
+    for check_name, passed in naturalness_state.items():
+        print(f"  - {check_name}: {'PASS' if passed else 'FAIL'}")
+    print(
+        "Naturalness statistics:",
+        {
+            "repeated_tokens": naturalness_summary["repeated_token_count"],
+            "repeated_three_word_phrases": naturalness_summary[
+                "repeated_three_word_phrase_count"
+            ],
+            "malformed_fragments": naturalness_summary[
+                "obvious_malformed_fragments"
+            ],
+        },
+    )
+    failed_checks = [
+        check_name
+        for check_name, passed in naturalness_state.items()
+        if not passed
+    ]
+    if failed_checks:
+        print("Cover failure details:", ", ".join(failed_checks))
+    print("Intermediate result: payload", "verified" if payload_state else "failed")
+    print("Intermediate result: cover", "verified" if cover_state else "failed")
     print("=" * 74)
-    print("FINAL RESULT:", "PASS" if pass_state else "FAIL")
+    print("FINAL RESULT:", "PASS" if overall_state else "FAIL")
     print("=" * 74)
 
     print("\nInput topic:", topic)
@@ -196,7 +232,9 @@ def main() -> None:
     print("Mapped payload length:", len(mapped))
     print("Embedding positions:", len(positions))
     print("Recovered plaintext:", recovered_plaintext.decode("utf-8"))
-    print("Overall status:", "PASS" if pass_state else "FAIL")
+    print("Payload status:", "PASS" if payload_state else "FAIL")
+    print("Cover status:", "PASS" if cover_state else "FAIL")
+    print("Overall status:", "PASS" if overall_state else "FAIL")
 
 
 if __name__ == "__main__":

@@ -61,10 +61,11 @@ class LLMGenerator:
             or DEFAULT_LLM_CONFIG.model_name
         )
 
-        self.device = (
+        requested_device = (
             device
             or DEFAULT_LLM_CONFIG.device
-        )
+        ).strip().lower()
+        self.device = self._resolve_device(requested_device)
 
         self.seed = (
             seed
@@ -84,6 +85,39 @@ class LLMGenerator:
             self.device,
             self.seed,
         )
+
+    @staticmethod
+    def _resolve_device(requested_device: str) -> str:
+        """Resolve an explicit device or choose the best available backend."""
+
+        if requested_device == "auto":
+            if torch.cuda.is_available():
+                return "cuda"
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                return "mps"
+            return "cpu"
+
+        if requested_device.startswith("cuda"):
+            if not torch.cuda.is_available():
+                logger.warning(
+                    "Device %s requested but CUDA is unavailable; using CPU.",
+                    requested_device,
+                )
+                return "cpu"
+            return requested_device
+
+        if requested_device == "mps":
+            if not hasattr(torch.backends, "mps") or not torch.backends.mps.is_available():
+                logger.warning("MPS requested but unavailable; using CPU.")
+                return "cpu"
+            return requested_device
+
+        if requested_device != "cpu":
+            raise ValueError(
+                "Unsupported LLM_DEVICE. Use auto, cpu, cuda, cuda:N, or mps."
+            )
+
+        return requested_device
 
     def _load_backend(self) -> None:
         """
@@ -109,16 +143,18 @@ class LLMGenerator:
                 "Transformers is not installed."
             ) from exc
 
-        # Avoid Windows CPU-threading crashes while materializing the
-        # model weights in the research prototype. This keeps the
-        # algorithm, configuration, and model selection unchanged.
+        # Avoid Windows CPU-threading crashes while materializing the model
+        # weights, while allowing more than one thread on larger CPUs.
         os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-        try:
-            torch.set_num_threads(1)
-            torch.set_num_interop_threads(1)
-        except RuntimeError:
-            pass
+        if self.device == "cpu":
+            try:
+                cpu_threads = int(os.getenv("LLM_CPU_THREADS", "0"))
+                if cpu_threads > 0:
+                    torch.set_num_threads(cpu_threads)
+                    torch.set_num_interop_threads(max(1, min(cpu_threads, 4)))
+            except RuntimeError:
+                pass
 
         logger.info(
             "Loading tokenizer: %s",
@@ -157,24 +193,7 @@ class LLMGenerator:
         # Device
         # ----------------------------------------------------
 
-        if self.device == "cuda":
-
-            if not torch.cuda.is_available():
-
-                logger.warning(
-                    "CUDA requested but unavailable. "
-                    "Falling back to CPU."
-                )
-
-                self.device = "cpu"
-
-            else:
-
-                model.to("cuda")
-
-        else:
-
-            model.to("cpu")
+        model.to(self.device)
 
         # ----------------------------------------------------
         # Padding
@@ -192,8 +211,9 @@ class LLMGenerator:
         self._model = model
 
         logger.info(
-            "Loaded model %s successfully",
+            "Loaded model %s successfully on %s",
             self.model_name,
+            self.device,
         )
 
     def generate(
