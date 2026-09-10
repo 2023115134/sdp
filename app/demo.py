@@ -1,7 +1,4 @@
-"""Interactive Phase-2 secure demo for the project.
-
-This demo uses the existing project modules without monkeypatching the LLM or
-crypto stack.
+"""
 
 Flow:
     plaintext
