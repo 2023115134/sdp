@@ -22,9 +22,10 @@ The project is based on the paper's use of a language model's candidate tokens, 
 - Positions are character offsets in the decoded cover string, not tokenizer indices.
 - Case-insensitive position validation is used because generated letters may be lowercase.
 - Qwen/Qwen2.5-0.5B-Instruct is the configured local development model.
-- No encryption, authentication, key exchange, PBKDF2, AEAD, or deployment layer is implemented in Phase 1.
+- The crypto utilities use the `cryptography` package's X25519 and HKDF-SHA256 primitives to derive separate bilateral directional keys. The existing project `app.crypto.aead` module supplies AES-256-GCM; the integration reuses that API. The one-way ephemeral-to-static-recipient API and PBKDF2 utilities remain available.
+- A same-process Alice/Bob demo and integration tests validate key agreement, bidirectional authenticated encryption, and rejection of tampering or mismatched contexts. This is an in-process handshake simulation, not a live network handshake. Public-key authentication is not implemented, and ECDHE is not integrated into the paper-based embedding/extraction workflow.
 - Wrong-key extraction is reported as key-dependent extraction validation, not as a cryptographic security proof.
 
 ## Future work
 
-Implement and benchmark any paper-specific token-selection rule that is specified more precisely, add a separately designed encryption layer if required by the final architecture, and evaluate naturalness with independently justified metrics.
+Implement and benchmark any paper-specific token-selection rule that is specified more precisely, integrate the ECDHE packet into the application transport, and evaluate naturalness with independently justified metrics.

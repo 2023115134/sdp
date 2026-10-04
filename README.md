@@ -11,6 +11,7 @@ The project aims to build a research-oriented prototype for covert communication
 - cryptographic position generation
 - EmbedderLLM prototype
 - extraction prototype
+- X25519 ECDHE key exchange with HKDF-SHA256 and AES-256-GCM transport encryption
 - end-to-end validation experiment
 
 ## Current Phase
@@ -81,7 +82,7 @@ python -m venv .venv
 
 ### 3. Activate the virtual environment
 
-```powershell
+````powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
 
 ```.\.venv\Scripts\Activate.ps1
@@ -93,7 +94,7 @@ The prompt should begin with `(.venv)` after activation.
 ```powershell
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-```
+````
 
 The default model is `Qwen/Qwen2.5-0.5B-Instruct`. Hugging Face may download it the first time a model-backed command runs. Keep the terminal connected to the internet for that first run.
 
@@ -215,6 +216,50 @@ python -c "from app.llm.generator import LLMGenerator; g = LLMGenerator(); print
 - [PAPER_ALIGNMENT.md](PAPER_ALIGNMENT.md) records exact matches, prototype assumptions, deviations, and future work.
 - `app.evaluation.metrics` contains data-driven aggregate metric calculations.
 - `app.evaluation.naturalness` reports lightweight repetition and sentence-shape statistics without heavyweight NLP dependencies.
+
+## ECDHE transport encryption
+
+Run the separate, in-process Alice/Bob integration demo with:
+
+```powershell
+python -m app.crypto.ecdhe_demo
+```
+
+Both peers generate fresh X25519 key pairs and simulate exchanging their
+public keys and a shared 16-byte salt in the same Python process. They keep
+their private keys secret and independently call `derive_session_keys()` with
+the same salt and associated data. Each side receives a send key and a
+different receive key. The demo encrypts and decrypts a message in both
+directions using those keys and the existing `app.crypto.aead` AES-256-GCM
+implementation. It prints each recovered message and a final `PASS`.
+
+```python
+from app.crypto.aead import decrypt, encrypt
+from app.crypto.ecdhe import derive_session_keys, generate_key_pair
+
+alice_private, alice_public = generate_key_pair()
+bob_private, bob_public = generate_key_pair()
+salt = b"shared-salt-1234"  # Alice shares this with her public key.
+context = b"session context"
+
+alice_send, alice_receive = derive_session_keys(alice_private, bob_public, salt, context)
+bob_send, bob_receive = derive_session_keys(bob_private, alice_public, salt, context)
+
+packet = encrypt(b"hidden payload", alice_send, context)
+plaintext = decrypt(
+	packet["ciphertext"], packet["tag"], packet["nonce"], bob_receive, context
+)
+```
+
+The existing `encrypt_for_peer()` / `decrypt_from_peer()` helpers remain
+available for one-way encryption to a recipient's long-term public key. They
+use a fresh sender ephemeral key per message and are separate from this
+bilateral simulation. X25519 and HKDF are provided by the `cryptography`
+package. AES-GCM is provided by the project's existing `app.crypto.aead`
+module; the ECDHE integration reuses it and does not implement another AES-GCM
+layer. This is not a live network handshake, and public-key authentication is
+not implemented. In production, unauthenticated public keys are vulnerable to
+man-in-the-middle attacks.
 
 ## Key Modules
 

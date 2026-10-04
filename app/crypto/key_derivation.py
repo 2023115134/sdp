@@ -1,4 +1,4 @@
-"""Derive cryptographic keys from a password and salt with PBKDF2."""
+﻿"""Derive cryptographic keys from a password and salt with PBKDF2."""
 
 from __future__ import annotations
 
