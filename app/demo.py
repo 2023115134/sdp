@@ -44,6 +44,8 @@ logging.basicConfig(
     format="%(levelname)s:%(name)s:%(message)s",
 )
 
+_PSK_AAD = b"llm-shield/psk/password-mode/aes-256-gcm/v1"
+
 
 def _derive_position_key(base_key: bytes, label: str) -> bytes:
     """Derive a stable position key from the session or PSK material."""
@@ -92,6 +94,7 @@ def _run_common_cover_pipeline(
     encrypted_packet: dict[str, bytes] | None = None,
     target_positions: list[int] | None = None,
     associated_data: bytes | None = None,
+    total_started: float | None = None,
 ) -> dict[str, object]:
     """Use the existing AES-GCM + mapping + SHAKE-128 + EmbedderLLM pipeline."""
 
@@ -108,24 +111,8 @@ def _run_common_cover_pipeline(
             self._demo_total = 0
 
         def _embed_one_character(self, *args, **kwargs):
-            character = kwargs.get("character", args[1] if len(args) > 1 else "")
-            position = kwargs.get("position", args[2] if len(args) > 2 else 0)
-            max_retries = kwargs.get("max_retries", args[6] if len(args) > 6 else 0)
-            elapsed = time.perf_counter() - self._demo_embedding_started
-            if key_label != "ECDHE":
-                print(
-                    f"[embedding] character={character!r} position={position} "
-                    f"retries<= {max_retries} elapsed={elapsed:.1f}s"
-                )
             result = super()._embed_one_character(*args, **kwargs)
             self._demo_completed = getattr(self, "_demo_completed", 0) + 1
-            total = getattr(self, "_demo_total", "?")
-            elapsed = time.perf_counter() - self._demo_embedding_started
-            if key_label != "ECDHE":
-                print(
-                    f"[embedding] progress={self._demo_completed}/{total} "
-                    f"elapsed={elapsed:.1f}s"
-                )
             return result
 
     plaintext = secret.encode("utf-8")
@@ -137,6 +124,47 @@ def _run_common_cover_pipeline(
     enc = encrypted["enc"]
     nonce = encrypted["nonce"]
     mapped = aead_to_character_sequence(enc)
+    if key_label == "PSK":
+        mapping_valid = character_sequence_to_aead(mapped) == enc
+        print("\n[3] AES-256-GCM / AEAD")
+        print("\nPlaintext:")
+        print(secret)
+        print("\nAAD:")
+        effective_aad = associated_data or b""
+        print(
+            effective_aad.hex()
+            if effective_aad
+            else "b'' (empty AAD; hex: <empty>)"
+        )
+        print("\nNonce:")
+        print(nonce.hex())
+        print("\nCiphertext:")
+        print(encrypted["ciphertext"].hex())
+        print("\nAuthentication Tag:")
+        print(encrypted["tag"].hex())
+        print("\nCiphertext Length:")
+        print(f"{len(encrypted['ciphertext'])} bytes")
+        print("\nAuthentication Tag Length:")
+        print(f"{len(encrypted['tag'])} bytes")
+        print("\nAEAD Encryption:")
+        print(
+            "PASS"
+            if len(nonce) == 12 and len(encrypted["tag"]) == 16
+            and enc == encrypted["tag"] + encrypted["ciphertext"]
+            else "FAIL"
+        )
+
+        print("\n[4] PAYLOAD MAPPING")
+        print("\nOriginal AEAD Payload:")
+        print(enc.hex())
+        print("\nMapped Payload:")
+        print(mapped)
+        print("\nMapped Payload Length:")
+        print(len(mapped))
+        print("\nMapping:")
+        print("PASS" if mapping_valid else "FAIL")
+        if not mapping_valid:
+            raise RuntimeError("PSK AEAD payload mapping did not round-trip")
 
     if target_positions is None:
         offset_do = 32
@@ -158,6 +186,26 @@ def _run_common_cover_pipeline(
         positions = target_positions
         if len(positions) != len(mapped):
             raise ValueError("target_positions must match mapped payload length")
+    if key_label == "PSK":
+        positions_valid = (
+            len(positions) == len(mapped)
+            and all(left < right for left, right in zip(positions, positions[1:]))
+        )
+        print("\n[5] SHAKE-128 POSITION GENERATION")
+        print("\nPosition Key:")
+        print("DK2")
+        print("\nSHAKE-128:")
+        print("ACTIVE")
+        print("\nNumber of Target Positions:")
+        print(len(positions))
+        print("\nTarget Position Sequence:")
+        print(positions)
+        print("\nPositions Strictly Increasing:")
+        print("PASS" if positions_valid else "FAIL")
+        print("\nPosition Generation:")
+        print("PASS" if positions_valid else "FAIL")
+        if not positions_valid:
+            raise RuntimeError("PSK target positions are invalid")
 
     safe_initial_story = _build_safe_initial_story(
         initial_story.strip() if initial_story and initial_story.strip() else topic,
@@ -168,7 +216,9 @@ def _run_common_cover_pipeline(
     character_map = CharacterMap()
     embedder = DemoEmbedder(llm_generator=generator, character_map=character_map)
     embedder._demo_total = len(mapped)
-    if key_label == "ECDHE":
+    if key_label in {"ECDHE", "PSK"}:
+        if key_label == "PSK":
+            print("\n[6] REAL EMBEDDERLLM / QWEN CARRIER GENERATION")
         print("\nLLM Model:")
         print(generator.model_name)
         print("\nEmbedding Payload Length:")
@@ -222,15 +272,21 @@ def _run_common_cover_pipeline(
     cover_state = all(naturalness_state.values())
     overall_state = payload_state and cover_state and embedding_verified
 
-    if key_label == "ECDHE":
+    if key_label in {"ECDHE", "PSK"}:
+        if key_label == "PSK":
+            print("\n[7] GENERATED COVER TEXT")
         print("\nGenerated Cover Text:")
         print(result.story)
         print("\nEmbedding Positions:")
         print(positions)
         print("\nEmbedded Characters:")
         print(result.embedded_characters)
+        if key_label == "PSK":
+            print("\n[8] EMBEDDING VERIFICATION")
         print("\nEmbedding Verification:")
         print("PASS" if embedding_verified else "FAIL")
+        if key_label == "PSK":
+            print("\n[9] EXTRACTION")
         print("\nExtracting payload from carrier text...")
         print("\nExtracted Characters:")
         print(canonical_extracted)
@@ -238,6 +294,8 @@ def _run_common_cover_pipeline(
         print(len(canonical_extracted))
         print("\nExtraction:")
         print("PASS" if canonical_extracted == mapped else "FAIL")
+        if key_label == "PSK":
+            print("\n[10] INVERSE MAPPING")
         print("\nMapped Payload:")
         print(mapped)
         print("\nRecovered AEAD Payload:")
@@ -246,6 +304,8 @@ def _run_common_cover_pipeline(
         print("PASS" if recovered_enc == enc else "FAIL")
         print("\nPayload Recovery:")
         print("PASS" if payload_state else "FAIL")
+        if key_label == "PSK":
+            print("\n[11] AEAD VERIFICATION / DECRYPTION")
         print("\nAuthentication Tag Verification:")
         print("PASS" if payload_state else "FAIL")
         print("\nAES-256-GCM Decryption:")
@@ -256,6 +316,21 @@ def _run_common_cover_pipeline(
         print(secret)
         print("\nOriginal == Recovered:")
         print("PASS" if recovered_plaintext == plaintext else "FAIL")
+        if key_label == "PSK":
+            print("\n[12] FINAL END-TO-END VERIFICATION")
+            print(
+                "Original message == recovered message:",
+                "PASS" if recovered_plaintext == plaintext else "FAIL",
+            )
+            print("Payload recovery:", "PASS" if payload_state else "FAIL")
+            print(
+                "End-to-end verification:",
+                "PASS" if overall_state else "FAIL",
+            )
+            runtime = time.perf_counter() - (
+                total_started if total_started is not None else start
+            )
+            print(f"Total runtime: {runtime:.2f} seconds")
     else:
         print(f"\n[{key_label}] Secure carrier pipeline")
         print(f"[{key_label}] Plaintext:", repr(secret))
@@ -289,19 +364,44 @@ def _run_common_cover_pipeline(
 
 
 def _run_psk_mode(topic: str, secret: str, password: str) -> None:
+    started = time.perf_counter()
     _print_mode_banner("PASSWORD / PSK")
+    print("\n[1] INPUT")
+    print("Topic:")
+    print(topic)
+    print("\nSecret Message:")
+    print(secret)
+
+    print("\n[2] PBKDF2 KEY DERIVATION")
     salt = generate_salt()
     dk1, dk2 = derive_keys(password, salt)
     position_key = dk2
-    print("[PSK] salt:", salt.hex())
-    print("[PSK] dk1 length:", len(dk1), "bytes")
-    print("[PSK] dk2 length:", len(dk2), "bytes")
+    keys_valid = len(dk1) == 32 and len(dk2) == 32
+    print("\nPBKDF2 Salt:")
+    print(salt.hex())
+    print("\nPBKDF2 Output Length:")
+    print(f"{(len(dk1) + len(dk2)) * 8} bits / {len(dk1) + len(dk2)} bytes")
+    print("\nDK1:")
+    print(dk1.hex())
+    print("\nDK1 Length:")
+    print(f"{len(dk1)} bytes")
+    print("\nDK2:")
+    print(dk2.hex())
+    print("\nDK2 Length:")
+    print(f"{len(dk2)} bytes")
+    print("\nDK1/DK2 Derivation:")
+    print("PASS" if keys_valid else "FAIL")
+    if not keys_valid:
+        raise RuntimeError("PSK PBKDF2 key derivation produced invalid key lengths")
+
     _run_common_cover_pipeline(
         topic=topic,
         secret=secret,
         encryption_key=dk1,
         position_key=position_key,
         key_label="PSK",
+        associated_data=_PSK_AAD,
+        total_started=started,
     )
 
 
