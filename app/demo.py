@@ -285,6 +285,10 @@ def _run_common_cover_pipeline(
             print("\n[8] EMBEDDING VERIFICATION")
         print("\nEmbedding Verification:")
         print("PASS" if embedding_verified else "FAIL")
+        print("\nCover Naturalness:")
+        for check, passed in naturalness_state.items():
+            label = check.replace("_", " ").title()
+            print(f"{label}: {'PASS' if passed else 'FAIL'}")
         if key_label == "PSK":
             print("\n[9] EXTRACTION")
         print("\nExtracting payload from carrier text...")
@@ -344,7 +348,20 @@ def _run_common_cover_pipeline(
         print(f"[{key_label}] Final result:", "PASS" if overall_state else "FAIL")
 
     if not overall_state:
-        raise RuntimeError(f"[{key_label}] secure covert pipeline failed")
+        failed_checks = []
+        if not embedding_verified:
+            failed_checks.append("embedding verification")
+        if not payload_state:
+            failed_checks.append("payload recovery")
+        failed_checks.extend(
+            f"cover naturalness: {check}"
+            for check, passed in naturalness_state.items()
+            if not passed
+        )
+        raise RuntimeError(
+            f"[{key_label}] secure covert pipeline failed: "
+            f"{'; '.join(failed_checks)}"
+        )
 
     return {
         "story": result.story,

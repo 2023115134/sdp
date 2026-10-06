@@ -9,7 +9,7 @@ from app.crypto.ecdhe_embedder_demo import (
 )
 from app.crypto.mapping import CharacterMap
 from app.crypto.position_generator import generate_positions
-from app.demo import _build_safe_initial_story
+from app.demo import _build_safe_initial_story, _run_common_cover_pipeline
 from app.extraction.extractor import Extractor
 from app.llm.embedder import EmbedderLLM, EmbeddingResult
 
@@ -168,3 +168,37 @@ def test_complete_ecdhe_public_key_to_aes_round_trip(monkeypatch):
         context,
     )
     assert plaintext == message
+
+
+def test_common_cover_pipeline_reports_failed_naturalness_check(monkeypatch, capsys):
+    monkeypatch.setattr(EmbedderLLM, "embed", _fake_embed)
+    monkeypatch.setattr(
+        EmbedderLLM,
+        "_validate_cover_naturalness",
+        classmethod(
+            lambda cls, story, topic: {
+                "topic_relevance": False,
+                "repetition": True,
+                "sentence_completeness": True,
+                "malformed_or_technical": True,
+            }
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"cover naturalness: topic_relevance",
+    ):
+        _run_common_cover_pipeline(
+            topic="a quiet city street",
+            secret="hi",
+            encryption_key=b"e" * 32,
+            position_key=b"p" * 32,
+            key_label="ECDHE",
+            associated_data=b"test",
+        )
+
+    output = capsys.readouterr().out
+    assert "Topic Relevance: FAIL" in output
+    assert "Embedding Verification:\nPASS" in output
+    assert "Payload Recovery:\nPASS" in output
