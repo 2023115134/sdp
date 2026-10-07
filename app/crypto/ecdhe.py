@@ -25,6 +25,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from .aead import decrypt as aead_decrypt
 from .aead import encrypt as aead_encrypt
 from .key_derivation import derive_keys
+from .position_generator import generate_positions
 
 
 class ECDHEError(ValueError):
@@ -459,6 +460,122 @@ def decrypt_from_peer(
     )
 
 
+def run_full_x25519_exchange(
+    *,
+    salt: bytes | bytearray | memoryview | None = None,
+    associated_data: bytes | bytearray | memoryview | None = None,
+    plaintext: bytes | bytearray | memoryview | None = None,
+) -> dict[str, Any]:
+    """Explicitly execute the full X25519 ECDHE + PBKDF2 + AES-GCM flow.
+
+    This helper keeps the underlying cryptographic primitives and current
+    security checks unchanged, but it makes the actual algorithm visible in a
+    single, line-by-line flow:
+
+    1. Generate sender X25519 private key.
+    2. Generate sender public key.
+    3. Generate receiver X25519 private key.
+    4. Generate receiver public key.
+    5. Exchange the two public keys.
+    6. Sender computes the shared secret using sender private key + receiver public key.
+    7. Receiver computes the shared secret using receiver private key + sender public key.
+    8. Verify both shared secrets are identical.
+    9. Use the shared secret with PBKDF2.
+    10. Generate 512-bit key material.
+    11. Split it into DK1 (256 bits) and DK2 (256 bits).
+    12. DK1 is used for AES-256-GCM.
+    13. DK2 is used for SHAKE-128 position generation.
+    """
+
+    if associated_data is None:
+        aad = b"llm-shield/ecdhe/full-flow"
+    elif isinstance(associated_data, memoryview):
+        aad = associated_data.tobytes()
+    elif isinstance(associated_data, (bytes, bytearray)):
+        aad = bytes(associated_data)
+    else:
+        raise TypeError("associated_data must be bytes-like or None")
+
+    if plaintext is None:
+        payload = b"ecdhe-demo-message"
+    elif isinstance(plaintext, memoryview):
+        payload = plaintext.tobytes()
+    elif isinstance(plaintext, (bytes, bytearray)):
+        payload = bytes(plaintext)
+    else:
+        raise TypeError("plaintext must be bytes-like or None")
+
+    if salt is None:
+        salt_bytes = os.urandom(16)
+    elif isinstance(salt, memoryview):
+        salt_bytes = salt.tobytes()
+    elif isinstance(salt, (bytes, bytearray)):
+        salt_bytes = bytes(salt)
+    else:
+        raise TypeError("salt must be bytes-like or None")
+
+    sender_private_key, sender_public_key = generate_key_pair()
+    receiver_private_key, receiver_public_key = generate_key_pair()
+
+    sender_shared_secret = derive_shared_secret(
+        sender_private_key,
+        receiver_public_key,
+    )
+    receiver_shared_secret = derive_shared_secret(
+        receiver_private_key,
+        sender_public_key,
+    )
+
+    if sender_shared_secret != receiver_shared_secret:
+        raise ECDHEError(
+            "ECDHE shared secrets do not match between sender and receiver"
+        )
+
+    dk1, dk2 = derive_ecdhe_keys(sender_shared_secret, salt_bytes)
+
+    encrypted = aead_encrypt(payload, dk1, aad)
+    positions = generate_positions(
+        key_material=dk2,
+        number_of_positions=min(16, max(len(payload), 1)),
+        offset_do=32,
+        max_story_length=100_000,
+        min_gap=1,
+    )
+
+    return {
+        "sender_private_key": sender_private_key,
+        "sender_public_key": sender_public_key,
+        "receiver_private_key": receiver_private_key,
+        "receiver_public_key": receiver_public_key,
+        "sender_shared_secret": sender_shared_secret,
+        "receiver_shared_secret": receiver_shared_secret,
+        "salt": salt_bytes,
+        "dk1": dk1,
+        "dk2": dk2,
+        "associated_data": aad,
+        "plaintext": payload,
+        "encrypted": encrypted,
+        "positions": positions,
+    }
+
+
+if __name__ == "__main__":
+    result = run_full_x25519_exchange()
+    print("1. sender private key:", result["sender_private_key"].hex())
+    print("2. sender public key:", result["sender_public_key"].hex())
+    print("3. receiver private key:", result["receiver_private_key"].hex())
+    print("4. receiver public key:", result["receiver_public_key"].hex())
+    print("5. exchanged public keys: OK")
+    print("6. sender shared secret:", result["sender_shared_secret"].hex())
+    print("7. receiver shared secret:", result["receiver_shared_secret"].hex())
+    print("8. shared secrets identical:", result["sender_shared_secret"] == result["receiver_shared_secret"])
+    print("9. PBKDF2 salt:", result["salt"].hex())
+    print("10. PBKDF2 key material length:", len(result["dk1"]) + len(result["dk2"]))
+    print("11. DK1 length:", len(result["dk1"]))
+    print("12. DK1 used for AES-256-GCM:", len(result["encrypted"]["ciphertext"]))
+    print("13. DK2 used for SHAKE-128 position generation:", result["positions"])
+
+
 __all__ = [
     "ECDHEError",
     "decrypt_from_peer",
@@ -467,4 +584,5 @@ __all__ = [
     "derive_session_keys",
     "encrypt_for_peer",
     "generate_key_pair",
+    "run_full_x25519_exchange",
 ]

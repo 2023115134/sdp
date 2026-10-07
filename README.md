@@ -11,7 +11,7 @@ The project aims to build a research-oriented prototype for covert communication
 - cryptographic position generation
 - EmbedderLLM prototype
 - extraction prototype
-- X25519 ECDHE key exchange with HKDF-SHA256 and AES-256-GCM transport encryption
+- X25519 ECDHE key exchange, PBKDF2 DK1/DK2 derivation, and AES-256-GCM encryption
 - end-to-end validation experiment
 
 ## Current Phase
@@ -80,21 +80,18 @@ Run this only if `.venv` does not already exist:
 python -m venv .venv
 ```
 
-### 3. Activate the virtual environment
+### 3. Use the project interpreter
 
-````powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
-
-```.\.venv\Scripts\Activate.ps1
-
-The prompt should begin with `(.venv)` after activation.
+Use `.venv\Scripts\python.exe` explicitly in every terminal. This avoids
+accidentally running the Windows Store/global Python and importing packages
+from its user site-packages:
 
 ### 4. Install dependencies
 
 ```powershell
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-````
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
 
 The default model is `Qwen/Qwen2.5-0.5B-Instruct`. Hugging Face may download it the first time a model-backed command runs. Keep the terminal connected to the internet for that first run.
 
@@ -102,10 +99,10 @@ Story generation is unseeded by default, so repeated runs with the same topic ma
 
 ## Run the tests
 
-Run the complete automated test suite:
+Run the complete automated test suite with the project interpreter:
 
 ```powershell
-python -m pytest -q
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
 Expected result:
@@ -116,12 +113,12 @@ Expected result:
 
 ## Run the paper-based workflow
 
-Run these commands in this order while the `(.venv)` environment is active.
+Run these commands in this order using the project interpreter.
 
 ### Stage 1: Test the Qwen generator
 
 ```powershell
-python -m app.llm.generator
+.\.venv\Scripts\python.exe -m app.llm.generator
 ```
 
 This loads Qwen, generates a short continuation, prints top-k candidates, and verifies that their probabilities are sorted.
@@ -129,7 +126,7 @@ This loads Qwen, generates a short continuation, prints top-k candidates, and ve
 ### Stage 2: Test one-character embedding
 
 ```powershell
-python -m app.llm.embedder
+.\.venv\Scripts\python.exe -m app.llm.embedder
 ```
 
 This uses one hidden character, `E`, at position `50`. It has bounded retries and candidate evaluations for laptop safety. Candidate selection keeps only tokens that satisfy the exact fixed embedding position, then ranks them by model log-probability with local naturalness and context signals.
@@ -137,7 +134,7 @@ This uses one hidden character, `E`, at position `50`. It has bounded retries an
 ### Stage 3: Test extraction
 
 ```powershell
-python -m app.extraction.extractor
+.\.venv\Scripts\python.exe -m app.extraction.extractor
 ```
 
 This independently extracts and decodes the known `HELLO` payload.
@@ -145,25 +142,29 @@ This independently extracts and decodes the known `HELLO` payload.
 ### Stage 4: Run the complete demo
 
 ```powershell
-python -m app.demo
+.\.venv\Scripts\python.exe -m app.demo
 ```
 
-The demo prompts for `Enter secret message:` and `Enter topic:`. The secret may contain any non-empty text. A blank topic is rejected and prompts again. The entered topic is used as the initial story context for Qwen and `EmbedderLLM`; no topic or secret is hardcoded.
-
-The official demo uses fixed paper mode: positions are generated before embedding with `PositionGenerator.generate_for_message()` and the `test-secret-key` configuration. For example, `hi` maps to `IRIH` and produces deterministic positions `[68, 129, 185, 223]`. The optional `EmbedderLLM.embed_dynamic()` method remains available for experimental comparisons but is not used by the official demo.
+The demo first prompts for PSK or ECDHE, followed by topic and secret message.
+It connects to Server B for either mode. Run Server B in another terminal
+with `.\.venv\Scripts\python.exe server_b.py` before starting the demo.
 
 The demo performs:
 
 ```text
 secret message
 	-> h4 character mapping
-	-> deterministic SHAKE128 position generation
+	-> PBKDF2-derived DK1/DK2
+	-> AES-256-GCM encryption
+	-> h4 character mapping
+	-> SHAKE-128 position generation
 	-> fixed target positions
 	-> Qwen candidate-token embedding
-	-> cover-text validation
+	-> TCP cover-text transmission
 	-> position-based extraction
-	-> decoding
-	-> wrong-key validation
+	-> inverse mapping
+	-> AES-GCM authentication and decryption
+	-> recovered message
 ```
 
 The final successful line is:
@@ -191,14 +192,14 @@ Increase this value carefully if readable continuations should have more influen
 Run the complete compile check:
 
 ```powershell
-python -m py_compile app/config.py app/crypto/mapping.py app/crypto/position_generator.py app/llm/generator.py app/llm/embedder.py app/extraction/extractor.py app/evaluation/metrics.py app/evaluation/naturalness.py app/demo.py
+.\.venv\Scripts\python.exe -m py_compile app/config.py app/crypto/mapping.py app/crypto/position_generator.py app/llm/generator.py app/llm/embedder.py app/extraction/extractor.py app/evaluation/metrics.py app/evaluation/naturalness.py app/demo.py
 ```
 
 Run the tests and official fixed-position demo:
 
 ```powershell
-python -m pytest -q
-python -m app.demo
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m app.demo
 ```
 
 The demo reports original and mapped secrets, deterministic positions, every embedding-position check, generated cover text, extraction results, naturalness validation, performance, and the final `END-TO-END TEST: PASS` or `FAIL` result. Final PASS requires both exact recovery and passing naturalness checks.
@@ -208,7 +209,7 @@ The demo reports original and mapped secrets, deterministic positions, every emb
 For a short generation-only check:
 
 ```powershell
-python -c "from app.llm.generator import LLMGenerator; g = LLMGenerator(); print(g.generate('Write a short sci-fi opening paragraph about a city under glass.', temperature=0.8, top_k=40, max_new_tokens=30, deterministic=True))"
+.\.venv\Scripts\python.exe -c "from app.llm.generator import LLMGenerator; g = LLMGenerator(); print(g.generate('Write a short sci-fi opening paragraph about a city under glass.', temperature=0.8, top_k=40, max_new_tokens=30, deterministic=True))"
 ```
 
 ## Evaluation and paper alignment
@@ -217,21 +218,48 @@ python -c "from app.llm.generator import LLMGenerator; g = LLMGenerator(); print
 - `app.evaluation.metrics` contains data-driven aggregate metric calculations.
 - `app.evaluation.naturalness` reports lightweight repetition and sentence-shape statistics without heavyweight NLP dependencies.
 
-## ECDHE transport encryption
+## PSK and ECDHE TCP communication
 
-Run the separate, in-process Alice/Bob integration demo with:
+Both modes use the same detailed LLM-SHIELD stages and run between separate
+Server A and Server B processes. From the project folder, start the receiver
+first in one PowerShell terminal:
 
 ```powershell
-python -m app.crypto.ecdhe_demo
+.\.venv\Scripts\python.exe server_b.py
 ```
 
-Both peers generate fresh X25519 key pairs and simulate exchanging their
-public keys and a shared 16-byte salt in the same Python process. They keep
-their private keys secret and independently call `derive_session_keys()` with
-the same salt and associated data. Each side receives a send key and a
-different receive key. The demo encrypts and decrypts a message in both
-directions using those keys and the existing `app.crypto.aead` AES-256-GCM
-implementation. It prints each recovered message and a final `PASS`.
+For ECDHE, connect the sender in the other terminal:
+
+```powershell
+.\.venv\Scripts\python.exe server_a.py --mode ecdhe --message HI --topic "A quiet city street at dusk"
+```
+
+For PSK, use the same command with `--mode psk`:
+
+```powershell
+.\.venv\Scripts\python.exe server_a.py --mode psk --message HI --topic "A quiet city street at dusk"
+```
+
+Server B listens on `127.0.0.1:50505` by default. In PSK mode, enter the same
+password at both terminals when prompted. To use the interactive mode picker,
+run `.\.venv\Scripts\python.exe server_a.py` or
+`.\.venv\Scripts\python.exe -m app.demo`; choose mode first and then enter the
+topic and message.
+
+In ECDHE mode, Server A and Server B exchange their X25519 public keys over
+TCP and independently derive and confirm the raw shared secret. The keys are
+separate handshake messages and are not embedded in the secret-message
+payload. Both modes then share a PBKDF2 salt, derive 512 bits, and split them
+into DK1 and DK2. DK1 encrypts/authenticates with the existing AES-256-GCM
+implementation. The mapped payload contains only the AEAD authentication tag
+and ciphertext; for `HI` it is 36 h4 characters. DK2 drives SHAKE-128 position
+generation. Server A embeds the mapped payload with `EmbedderLLM` and sends
+the cover text to Server B, which regenerates positions, extracts, inverse
+maps, authenticates, and decrypts it. Both terminals display their respective
+pipeline stages. Restart Server B before each new one-shot connection.
+
+The in-process, bidirectional HKDF example remains available in
+`python -m app.crypto.ecdhe_demo`:
 
 ```python
 from app.crypto.aead import decrypt, encrypt
@@ -239,7 +267,7 @@ from app.crypto.ecdhe import derive_session_keys, generate_key_pair
 
 alice_private, alice_public = generate_key_pair()
 bob_private, bob_public = generate_key_pair()
-salt = b"shared-salt-1234"  # Alice shares this with her public key.
+salt = b"shared-salt-1234"
 context = b"session context"
 
 alice_send, alice_receive = derive_session_keys(alice_private, bob_public, salt, context)
@@ -253,13 +281,11 @@ plaintext = decrypt(
 
 The existing `encrypt_for_peer()` / `decrypt_from_peer()` helpers remain
 available for one-way encryption to a recipient's long-term public key. They
-use a fresh sender ephemeral key per message and are separate from this
-bilateral simulation. X25519 and HKDF are provided by the `cryptography`
-package. AES-GCM is provided by the project's existing `app.crypto.aead`
-module; the ECDHE integration reuses it and does not implement another AES-GCM
-layer. This is not a live network handshake, and public-key authentication is
-not implemented. In production, unauthenticated public keys are vulnerable to
-man-in-the-middle attacks.
+use a fresh sender ephemeral key per message and remain unchanged. The TCP
+example uses the raw X25519 shared secret with the project's PBKDF2 derivation
+for its covert-message pipeline. The demo does not authenticate peer
+identities: unauthenticated public keys are vulnerable to man-in-the-middle
+attacks.
 
 ## Key Modules
 

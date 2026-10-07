@@ -11,6 +11,7 @@ from .ecdhe import (
     derive_shared_secret,
     encrypt_for_peer,
     generate_key_pair,
+    run_full_x25519_exchange,
 )
 
 __all__ = [
@@ -25,4 +26,5 @@ __all__ = [
     "encrypt_for_peer",
     "generate_key_pair",
     "generate_salt",
+    "run_full_x25519_exchange",
 ]

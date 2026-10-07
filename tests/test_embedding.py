@@ -86,3 +86,86 @@ def test_normal_candidate_prefers_fresh_text_but_keeps_repetitive_fallback():
         topic="a journey",
     )
     assert only_option is repeated
+
+
+def test_adaptive_space_search_does_not_treat_tabs_as_payload_spaces():
+    class WhitespaceGenerator:
+        def get_next_token_candidates(self, prompt, top_k, temperature):
+            return [
+                _FakeCandidate("\tword", probability=0.99),
+                _FakeCandidate(" word", probability=0.1),
+            ]
+
+    embedder = EmbedderLLM(llm_generator=WhitespaceGenerator())
+    adaptive_story = embedder._generate_until_character(
+        story="A beginning",
+        character=" ",
+        topic="a story",
+        temperature=0.7,
+        top_k=40,
+        max_steps=1,
+    )
+
+    assert adaptive_story == "A beginning word"
+
+
+def test_adaptive_embedding_shifts_positions_after_natural_placement(monkeypatch):
+    embedder = EmbedderLLM(llm_generator=_FakeGenerator())
+
+    def fail_fixed_target(**kwargs):
+        raise RuntimeError("fixed target was unreachable")
+
+    monkeypatch.setattr(embedder, "_embed_one_character", fail_fixed_target)
+    monkeypatch.setattr(
+        embedder,
+        "_generate_adaptive_character",
+        lambda **kwargs: ("seed\tabc S", 9),
+    )
+    monkeypatch.setattr(
+        embedder,
+        "_complete_cover_text",
+        lambda story, topic, max_tokens: story,
+    )
+    monkeypatch.setattr(
+        embedder,
+        "_validate_cover_naturalness",
+        lambda story, topic: {"test": True},
+    )
+
+    positions = [8]
+    result = embedder.embed(
+        topic="a story",
+        characters="S",
+        positions=positions,
+        initial_story="seed",
+        allow_adaptive_positions=True,
+    )
+
+    assert positions == [8]
+    assert result.positions == [9]
+    assert result.story[9] == "S"
+
+
+def test_adaptive_generator_uses_real_model_character_at_target(monkeypatch):
+    class AdaptiveGenerator:
+        def get_next_token_candidates(self, prompt, top_k, temperature):
+            return [_FakeCandidate("quiet S evening", probability=0.8)]
+
+    embedder = EmbedderLLM(llm_generator=AdaptiveGenerator())
+    monkeypatch.setattr(
+        embedder,
+        "_candidate_naturalness",
+        lambda story, token, topic: 1.0,
+    )
+    story, position = embedder._generate_adaptive_character(
+        story="The",
+        character="S",
+        minimum_position=4,
+        topic="evening",
+        max_steps=2,
+        following_gap=40,
+    )
+
+    assert story == "Thequiet S evening"
+    assert story[position] == "S"
+    assert position == 9

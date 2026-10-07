@@ -915,7 +915,7 @@ class EmbedderLLM:
             # SPACE validation is based on the resulting story character because
             # Qwen uses subword tokens with leading whitespace.
             target_character = new_story[position]
-            if not (target_character == " " or target_character.isspace()):
+            if target_character != " ":
                 rejection_reasons.append(
                     f"target contains {target_character!r}, expected a space"
                 )
@@ -1216,7 +1216,7 @@ class EmbedderLLM:
                 if re.search(r"(?:^|\s)(?:\*\*|#+|\d+\.)", token):
                     continue
                 if character == " ":
-                    found = any(char.isspace() for char in token)
+                    found = " " in token
                 else:
                     found = character.lower() in token.lower()
                 if found:
@@ -1242,6 +1242,95 @@ class EmbedderLLM:
             )
             if normal is None:
                 break
+            story += normal.token
+
+        return None
+
+    def _generate_adaptive_character(
+        self,
+        story: str,
+        character: str,
+        minimum_position: int,
+        topic: str,
+        max_steps: int,
+        following_gap: int | None,
+    ) -> tuple[str, int] | None:
+        """Naturally generate until a real model token carries the character."""
+
+        top_k = max(self.DIRECT_FALLBACK_TOP_K, 1000)
+        self._last_failure_reason = (
+            f"adaptive generation did not produce {character!r} "
+            f"at or after position {minimum_position}"
+        )
+
+        for _ in range(max_steps):
+            self._embedding_stats["llm_calls"] += 1
+            candidates = self.llm_generator.get_next_token_candidates(
+                prompt=self._model_prompt(topic, story),
+                top_k=top_k,
+                temperature=self.DEFAULT_TEMPERATURE,
+            )
+            if not candidates:
+                self._last_failure_reason = "Qwen returned no adaptive candidates"
+                return None
+
+            suitable: list[tuple[float, object, int]] = []
+            for candidate in candidates:
+                token = candidate.token
+                if not token or self._is_repetitive_continuation(story, token):
+                    continue
+                if re.search(r"(?:^|\s)(?:\*\*|#+|\d+\.)", token):
+                    continue
+
+                new_story = story + token
+                for offset, actual in enumerate(token):
+                    absolute_position = len(story) + offset
+                    matches = (
+                        actual == " "
+                        if character == " "
+                        else actual.lower() == character.lower()
+                    )
+                    if not matches or absolute_position < minimum_position:
+                        continue
+                    if (
+                        following_gap is not None
+                        and len(new_story) - 1 > absolute_position + following_gap
+                    ):
+                        continue
+
+                    if (
+                        self._candidate_naturalness(story, token, topic) < 0.25
+                    ):
+                        continue
+                    suitable.append(
+                        (candidate.probability, candidate, absolute_position)
+                    )
+                    break
+
+            if suitable:
+                _, selected, absolute_position = max(
+                    suitable,
+                    key=lambda item: item[0],
+                )
+                self._last_failure_reason = ""
+                return story + selected.token, absolute_position
+
+            valid = [
+                candidate
+                for candidate in candidates
+                if candidate.token
+                and not self._is_repetitive_continuation(story, candidate.token)
+            ]
+            normal = self._select_normal_candidate(
+                story=story,
+                candidates=valid,
+                topic=topic,
+            )
+            if normal is None:
+                self._last_failure_reason = (
+                    "no natural continuation candidate during adaptive placement"
+                )
+                return None
             story += normal.token
 
         return None
@@ -1378,6 +1467,7 @@ class EmbedderLLM:
         max_attempts: int = 10000,
         max_retries: int = DEFAULT_RETRIES,
         deterministic: bool = False,
+        allow_adaptive_positions: bool = False,
     ) -> EmbeddingResult:
 
         self._validate_inputs(
@@ -1438,9 +1528,6 @@ class EmbedderLLM:
             "retries": 0,
         }
 
-        # Keep the caller's position list synchronized when adaptive
-        # recovery has to record a natural occurrence instead of a fixed one.
-        provided_positions = positions
         positions = list(positions)
 
         # --------------------------------------------------------------
@@ -1486,38 +1573,42 @@ class EmbedderLLM:
                     attempt_counter=character_attempt_counter,
                 )
             except RuntimeError as exc:
+                if not allow_adaptive_positions:
+                    raise
                 logger.warning(
                     "Fixed position %d was unreachable for %r; "
-                    "trying natural adaptive placement",
+                    "placing it at the next natural model occurrence",
                     position,
                     character,
                 )
-                adaptive_story = self._generate_until_character(
+                following_gap = (
+                    positions[index + 1] - position
+                    if index + 1 < len(positions)
+                    else None
+                )
+                adaptive_result = self._generate_adaptive_character(
                     story=story,
                     character=character,
+                    minimum_position=position,
                     topic=topic,
-                    temperature=temperature,
-                    top_k=max(top_k, 100),
                     max_steps=max_new_tokens * 8,
+                    following_gap=following_gap,
                 )
-                if adaptive_story is None:
-                    raise exc
-                start = len(story)
-                target_index = next(
-                    index
-                    for index in range(start, len(adaptive_story))
-                    if (
-                        adaptive_story[index].isspace()
-                        if character == " "
-                        else adaptive_story[index].lower() == character.lower()
-                    )
-                )
-                delta = target_index - position
-                positions[index] = target_index
-                position = target_index
+                if adaptive_result is None:
+                    raise RuntimeError(
+                        f"{exc} Adaptive placement also failed: "
+                        f"{self._last_failure_reason}."
+                    ) from exc
+                story, adaptive_position = adaptive_result
+                delta = adaptive_position - position
+                positions[index] = adaptive_position
                 for following in range(index + 1, len(positions)):
                     positions[following] += delta
-                story = adaptive_story
+                position = adaptive_position
+                print(
+                    f"Adaptive placement: using natural character at position "
+                    f"{adaptive_position}; shifted following positions by {delta}"
+                )
             total_attempt_counter[0] += character_attempt_counter[0]
 
             # Immediate verification.
@@ -1537,9 +1628,6 @@ class EmbedderLLM:
         # --------------------------------------------------------------
         # Final validation.
         # --------------------------------------------------------------
-
-        if isinstance(provided_positions, list):
-            provided_positions[:] = positions
 
         for character, position in zip(
             characters,

@@ -381,45 +381,9 @@ def _run_common_cover_pipeline(
 
 
 def _run_psk_mode(topic: str, secret: str, password: str) -> None:
-    started = time.perf_counter()
-    _print_mode_banner("PASSWORD / PSK")
-    print("\n[1] INPUT")
-    print("Topic:")
-    print(topic)
-    print("\nSecret Message:")
-    print(secret)
+    from server_a import send_message
 
-    print("\n[2] PBKDF2 KEY DERIVATION")
-    salt = generate_salt()
-    dk1, dk2 = derive_keys(password, salt)
-    position_key = dk2
-    keys_valid = len(dk1) == 32 and len(dk2) == 32
-    print("\nPBKDF2 Salt:")
-    print(salt.hex())
-    print("\nPBKDF2 Output Length:")
-    print(f"{(len(dk1) + len(dk2)) * 8} bits / {len(dk1) + len(dk2)} bytes")
-    print("\nDK1:")
-    print(dk1.hex())
-    print("\nDK1 Length:")
-    print(f"{len(dk1)} bytes")
-    print("\nDK2:")
-    print(dk2.hex())
-    print("\nDK2 Length:")
-    print(f"{len(dk2)} bytes")
-    print("\nDK1/DK2 Derivation:")
-    print("PASS" if keys_valid else "FAIL")
-    if not keys_valid:
-        raise RuntimeError("PSK PBKDF2 key derivation produced invalid key lengths")
-
-    _run_common_cover_pipeline(
-        topic=topic,
-        secret=secret,
-        encryption_key=dk1,
-        position_key=position_key,
-        key_label="PSK",
-        associated_data=_PSK_AAD,
-        total_started=started,
-    )
+    send_message("127.0.0.1", 50505, secret, topic, mode="psk", password=password)
 
 
 @dataclass(frozen=True)
@@ -625,167 +589,9 @@ def _run_ecdhe_crypto_only(topic: str, secret: str) -> ECDHECryptoResult:
 
 
 def _run_ecdhe_mode(topic: str, secret: str) -> None:
-    started = time.perf_counter()
-    alice_private, alice_public = generate_key_pair()
-    bob_private, bob_public = generate_key_pair()
-    print("=" * 78)
-    print("ECDHE END-TO-END PRESENTATION DEMO")
-    print("=" * 78)
-    print("\n[1] INPUT")
-    print(f"Topic          : {topic}")
-    print(f"Secret Message : {secret}")
+    from server_a import send_message
 
-    print("\n[2] ECDHE KEY EXCHANGE")
-    print("\nAlice Public Key:")
-    print(alice_public.hex())
-    print("\nBob Public Key:")
-    print(bob_public.hex())
-    alice_shared_secret = derive_shared_secret(alice_private, bob_public)
-    bob_shared_secret = derive_shared_secret(bob_private, alice_public)
-    shared_secret_matches = alice_shared_secret == bob_shared_secret
-    print("\nAlice Raw Shared Secret:")
-    print(alice_shared_secret.hex())
-    print("\nBob Raw Shared Secret:")
-    print(bob_shared_secret.hex())
-    print("\nShared Secret Match:")
-    print("PASS" if shared_secret_matches else "FAIL")
-    if not shared_secret_matches:
-        raise RuntimeError("ECDHE raw shared secret mismatch")
-
-    print("\n[3] PBKDF2 KEY DERIVATION")
-    salt = generate_salt()
-    dk1, dk2 = derive_ecdhe_keys(alice_shared_secret, salt)
-    pbkdf2_valid = len(dk1) == 32 and len(dk2) == 32
-    print("\nPBKDF2 Salt:")
-    print(salt.hex())
-    print("\nPBKDF2 Output:")
-    print(f"{(len(dk1) + len(dk2)) * 8} bits / {len(dk1) + len(dk2)} bytes")
-    print("\nDK1:")
-    print(dk1.hex())
-    print("\nDK1 Length:")
-    print(f"{len(dk1)} bytes")
-    print("\nDK2:")
-    print(dk2.hex())
-    print("\nDK2 Length:")
-    print(f"{len(dk2)} bytes")
-    print("\nDK1/DK2 Derivation:")
-    print("PASS" if pbkdf2_valid else "FAIL")
-    if not pbkdf2_valid:
-        raise RuntimeError("ECDHE PBKDF2 key derivation produced invalid key lengths")
-
-    print("\n[4] AES-256-GCM / AEAD")
-    plaintext = secret.encode("utf-8")
-    associated_data = b"llm-shield/carrier-session"
-    encrypted = encrypt(plaintext, dk1, associated_data)
-    aead_valid = (
-        len(encrypted["nonce"]) == 12
-        and len(encrypted["tag"]) == 16
-        and encrypted["enc"] == encrypted["tag"] + encrypted["ciphertext"]
-    )
-    print("\nPlaintext:")
-    print(secret)
-    print("\nAAD:")
-    print(associated_data.hex())
-    print("\nNonce:")
-    print(encrypted["nonce"].hex())
-    print("\nCiphertext:")
-    print(encrypted["ciphertext"].hex())
-    print("\nAuthentication Tag:")
-    print(encrypted["tag"].hex())
-    print("\nCiphertext Length:")
-    print(f"{len(encrypted['ciphertext'])} bytes")
-    print("\nAuthentication Tag Length:")
-    print(f"{len(encrypted['tag'])} bytes")
-    print("\nAEAD Encryption:")
-    print("PASS" if aead_valid else "FAIL")
-    if not aead_valid:
-        raise RuntimeError("ECDHE AES-GCM encryption output is invalid")
-
-    print("\n[5] PAYLOAD MAPPING")
-    print("\nOriginal AEAD Payload:")
-    print(encrypted["enc"].hex())
-    mapped = aead_to_character_sequence(encrypted["enc"])
-    mapping_valid = character_sequence_to_aead(mapped) == encrypted["enc"]
-    print("\nMapped Payload:")
-    print(mapped)
-    print("\nMapped Payload Length:")
-    print(len(mapped))
-    print("\nMapping:")
-    print("PASS" if mapping_valid else "FAIL")
-    if not mapping_valid:
-        raise RuntimeError("ECDHE AEAD payload mapping did not round-trip")
-
-    print("\n[6] SHAKE-128 POSITION GENERATION")
-    print("\nPosition Key:")
-    print("DK2")
-    print("\nSHAKE-128:")
-    print("ACTIVE")
-    positions = generate_positions(
-        key_material=dk2,
-        number_of_positions=len(mapped),
-        offset_do=32,
-        max_story_length=100_000,
-        min_gap=1,
-    )
-    positions_valid = (
-        len(positions) == len(mapped)
-        and all(left < right for left, right in zip(positions, positions[1:]))
-    )
-    print("\nNumber of Target Positions:")
-    print(len(positions))
-    print("\nTarget Position Sequence:")
-    print(positions)
-    print("\nPositions Strictly Increasing:")
-    print("PASS" if positions_valid else "FAIL")
-    print("\nPosition Generation:")
-    print("PASS" if positions_valid else "FAIL")
-    if not positions_valid:
-        raise RuntimeError("ECDHE target positions are invalid")
-
-    print("\n[7] REAL EMBEDDERLLM/QWEN CARRIER GENERATION")
-    pipeline_result = _run_common_cover_pipeline(
-        topic=topic,
-        secret=secret,
-        encryption_key=dk1,
-        position_key=dk2,
-        initial_story="",
-        key_label="ECDHE",
-        encrypted_packet=encrypted,
-        target_positions=positions,
-        associated_data=associated_data,
-    )
-    recovered_plaintext = pipeline_result["recovered_plaintext"]
-    assert isinstance(recovered_plaintext, bytes)
-    embedding_valid = pipeline_result["embedding_verified"] is True
-    extraction_valid = pipeline_result["extracted"] == mapped
-    inverse_mapping_valid = pipeline_result["recovered_enc"] == encrypted["enc"]
-    authentication_valid = recovered_plaintext == plaintext
-    end_to_end_valid = pipeline_result["overall_state"] is True
-
-    print("\n[8] END-TO-END STATUS")
-    for label, is_valid in (
-        ("ECDHE", shared_secret_matches),
-        ("PBKDF2", pbkdf2_valid),
-        ("DK1", len(dk1) == 32),
-        ("DK2", len(dk2) == 32),
-        ("AES-256-GCM", aead_valid),
-        ("Authentication Tag", len(encrypted["tag"]) == 16),
-        ("Payload Mapping", mapping_valid),
-        ("SHAKE-128", positions_valid),
-        ("Target Positions", positions_valid),
-        ("EmbedderLLM", embedding_valid),
-        ("Extraction", extraction_valid),
-        ("Inverse Mapping", inverse_mapping_valid),
-        ("AEAD Verification", authentication_valid),
-        ("End-to-End Verification", end_to_end_valid),
-    ):
-        print(f"{label}: {'PASS' if is_valid else 'FAIL'}")
-
-    elapsed = time.perf_counter() - started
-    print("\nPerformance:")
-    print(f"{elapsed:.2f} seconds")
-    if not end_to_end_valid:
-        raise RuntimeError("ECDHE end-to-end verification failed")
+    send_message("127.0.0.1", 50505, secret, topic, mode="ecdhe")
 
 
 def _prompt_for_mode() -> str:
@@ -807,20 +613,14 @@ def main() -> None:
     parser.add_argument("--topic", default="", help="Story topic for generation")
     parser.add_argument("--secret", default="", help="Secret message to hide")
     parser.add_argument("--password", default="", help="Password for PSK mode")
-    parser.add_argument(
-        "--crypto-only",
-        action="store_true",
-        help="Verify ECDHE crypto, mapping, and positions without running the LLM",
-    )
+    parser.add_argument("--host", default="127.0.0.1", help="Server B address")
+    parser.add_argument("--port", type=int, default=50505, help="Server B TCP port")
     args = parser.parse_args()
 
     if args.mode is None:
         mode = _prompt_for_mode()
     else:
         mode = args.mode
-
-    if args.crypto_only and mode != "ecdhe":
-        parser.error("--crypto-only can only be used with --mode ecdhe")
 
     while True:
         topic = args.topic.strip() if args.topic else input("Enter topic: ").strip()
@@ -836,13 +636,15 @@ def main() -> None:
 
     if mode == "psk":
         password = args.password if args.password else getpass.getpass("Enter password: ")
-        _run_psk_mode(topic, secret, password)
-    elif args.crypto_only:
-        _run_ecdhe_crypto_only(topic, secret)
-    else:
-        _run_ecdhe_mode(topic, secret)
+        from server_a import send_message
 
-    print("\nMAIN DEMO: COMPLETE")
+        send_message(
+            args.host, args.port, secret, topic, mode="psk", password=password
+        )
+    else:
+        from server_a import send_message
+
+        send_message(args.host, args.port, secret, topic, mode="ecdhe")
 
 
 if __name__ == "__main__":
