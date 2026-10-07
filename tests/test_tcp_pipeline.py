@@ -15,13 +15,17 @@ class _FakeGenerator:
 
 class _FakeEmbedder:
     position_shift = 0
+    requested_positions = []
+    actual_positions = []
 
     def __init__(self, llm_generator, character_map):
         self.llm_generator = llm_generator
         self.character_map = character_map
 
     def embed(self, topic, characters, positions, initial_story, **kwargs):
+        type(self).requested_positions = list(positions)
         positions = [position + self.position_shift for position in positions]
+        type(self).actual_positions = list(positions)
         story = list(initial_story)
         if positions and len(story) <= positions[-1]:
             story.extend(" " * (positions[-1] + 1 - len(story)))
@@ -47,7 +51,8 @@ class _FakeEmbedder:
 
 @pytest.mark.parametrize("mode", ["psk", "ecdhe"])
 @pytest.mark.parametrize("position_shift", [0, 1])
-def test_two_server_pipeline_round_trip_hi(mode, position_shift, monkeypatch, capsys):
+@pytest.mark.parametrize("secret", ["HI", "hi"])
+def test_two_server_pipeline_round_trip_hi(mode, position_shift, secret, monkeypatch, capsys):
     from app.llm import embedder, generator
 
     monkeypatch.setattr(embedder, "EmbedderLLM", _FakeEmbedder)
@@ -74,7 +79,7 @@ def test_two_server_pipeline_round_trip_hi(mode, position_shift, monkeypatch, ca
     send_message(
         "127.0.0.1",
         port,
-        "HI",
+        secret,
         "A quiet city street at dusk",
         mode=mode,
         password="test-password" if mode == "psk" else None,
@@ -83,6 +88,14 @@ def test_two_server_pipeline_round_trip_hi(mode, position_shift, monkeypatch, ca
 
     assert not thread.is_alive()
     assert not errors
+    assert len(_FakeEmbedder.requested_positions) == 36
+    expected_positions = [
+        position + position_shift
+        for position in _FakeEmbedder.requested_positions
+    ]
+    assert _FakeEmbedder.actual_positions == expected_positions
+    if not position_shift:
+        assert _FakeEmbedder.actual_positions == _FakeEmbedder.requested_positions
     output = capsys.readouterr().out
     if mode == "ecdhe":
         assert "Shared secrets match   : PASS" in output
@@ -90,8 +103,12 @@ def test_two_server_pipeline_round_trip_hi(mode, position_shift, monkeypatch, ca
     else:
         assert "Password-based key establishment" in output
     assert "Mapped payload length    : 36 characters" in output
+    assert "Embedding status          : PASS (36 characters)" in output
+    assert "Extraction               : PASS" in output
+    assert "Inverse mapping          : PASS" in output
+    assert "AES-256-GCM verification : PASS" in output
     if position_shift:
         assert "Adaptive target positions: authenticated" in output
-    assert "Recovered message        : HI" in output
+    assert f"Recovered message        : {secret}" in output
     assert "Message match            : PASS" in output
     assert "Overall result           : PASS" in output

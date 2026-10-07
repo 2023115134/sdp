@@ -23,6 +23,9 @@ class _FakeGenerator:
             return [_FakeCandidate(" tail")]
         return [_FakeCandidate(".")]
 
+    def generate(self, prompt, **kwargs):
+        return "."
+
 
 def test_embedder_success_and_failure_paths():
     mapper = CharacterMap()
@@ -86,6 +89,119 @@ def test_normal_candidate_prefers_fresh_text_but_keeps_repetitive_fallback():
         topic="a journey",
     )
     assert only_option is repeated
+
+
+def test_embedding_candidate_prefers_natural_phrase_over_repeated_frame():
+    embedder = EmbedderLLM()
+    story = "The student found a new book, a new class, "
+    repetitive = _FakeCandidate("a new story", probability=0.9)
+    natural = _FakeCandidate("a noble teacher", probability=0.3)
+
+    selected = embedder._select_embedding_candidate(
+        story=story,
+        candidates=[repetitive, natural],
+        character="n",
+        position=len(story) + 2,
+        topic="studying",
+    )
+
+    assert selected is not None
+    assert selected[1] is natural
+    assert (story + selected[1].token)[len(story) + 2] == "n"
+
+
+def test_cover_naturalness_flags_repeated_short_phrase_frames():
+    story = (
+        "The student saw a new book, a new class, a new desk, "
+        "and a new professor while studying."
+    )
+
+    naturalness = EmbedderLLM._validate_cover_naturalness(
+        story=story,
+        topic="studying",
+    )
+
+    assert naturalness["repetition"] is False
+
+
+def test_candidate_ranking_penalizes_adjective_lists_and_related_stems():
+    embedder = EmbedderLLM()
+    story = "In the classroom, "
+    list_candidate = _FakeCandidate(
+        " serene, peaceful, refreshing, tranquil, students reviewed the lesson.",
+        probability=0.75,
+    )
+    narrative_candidate = _FakeCandidate(
+        " students compared their notes and discussed the lesson.",
+        probability=0.35,
+    )
+    required_position = len(story) + 1
+
+    selected = embedder._select_embedding_candidate(
+        story=story,
+        candidates=[list_candidate, narrative_candidate],
+        character="s",
+        position=required_position,
+        topic="studying",
+    )
+
+    assert selected is not None
+    assert selected[1] is narrative_candidate
+    assert (story + selected[1].token)[required_position] == "s"
+    assert embedder._word_stem("serene") == embedder._word_stem("serenity")
+    assert (
+        embedder._word_stem("enlightening")
+        == embedder._word_stem("enlightenment")
+    )
+    assert (
+        embedder._word_stem("revitalizing")
+        == embedder._word_stem("revitalized")
+        == embedder._word_stem("revitalization")
+    )
+
+
+def test_cover_tail_uses_one_bounded_text_generation():
+    class TailGenerator:
+        def __init__(self):
+            self.calls = []
+
+        def generate(self, prompt, **kwargs):
+            self.calls.append((prompt, kwargs))
+            return "and the evening settles over the town."
+
+        def get_next_token_candidates(self, **kwargs):
+            raise AssertionError("tail completion must not run candidate-by-candidate")
+
+    generator = TailGenerator()
+    embedder = EmbedderLLM(llm_generator=generator)
+    original = "A hidden payload ends"
+
+    completed = embedder._complete_cover_text(
+        story=original,
+        topic="a quiet town",
+        max_tokens=80,
+    )
+
+    assert len(generator.calls) == 1
+    assert generator.calls[0][1]["max_new_tokens"] == 48
+    assert completed.startswith(original)
+    assert completed.endswith("town.")
+
+
+def test_cover_tail_caps_requested_generation_length():
+    class TailGenerator:
+        def __init__(self):
+            self.max_new_tokens = None
+
+        def generate(self, prompt, **kwargs):
+            self.max_new_tokens = kwargs["max_new_tokens"]
+            return "continues."
+
+    generator = TailGenerator()
+    embedder = EmbedderLLM(llm_generator=generator)
+    embedder._complete_cover_text("unfinished", "topic", max_tokens=8)
+
+    assert generator.max_new_tokens == 8
 
 
 def test_adaptive_space_search_does_not_treat_tabs_as_payload_spaces():

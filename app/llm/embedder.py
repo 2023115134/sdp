@@ -66,11 +66,9 @@ class EmbedderLLM:
 
     DEFAULT_RETRIES = 12
 
-    # Candidate scoring.
-    # Probability remains dominant because this is an LLM
-    # candidate-selection algorithm.
+    # Candidate scoring balances model likelihood with cover-text quality.
     PROBABILITY_WEIGHT = 1.0
-    NATURALNESS_WEIGHT = 0.45
+    NATURALNESS_WEIGHT = 2.0
     MIN_CANDIDATE_PROBABILITY = 1e-5
 
     # Don't allow generation to run forever.
@@ -86,6 +84,14 @@ class EmbedderLLM:
         "it", "this", "that", "has", "have",
         "had", "be", "been", "can", "will",
         "would", "could", "their", "there",
+    }
+    ADJECTIVE_LIKE_SUFFIXES = (
+        "ful", "ous", "ive", "less", "able", "ible", "al", "ish",
+        "izing", "ized", "ing",
+    )
+    ADJECTIVE_LIKE_WORDS = {
+        "calm", "clear", "focused", "gentle", "happy", "kind",
+        "peaceful", "quiet", "serene", "tranquil", "warm",
     }
 
     BAD_PATTERNS = [
@@ -190,16 +196,19 @@ class EmbedderLLM:
         """Give Qwen narrative instructions while preserving cover indexing."""
 
         return (
-            "Write a coherent, natural short story in ordinary English. "
+            "Continue a coherent, natural short story in ordinary English, "
+            "not a list of keywords or descriptions. "
             "Stay strongly related to this topic: "
             f"{topic.strip()}\n"
             "Avoid unnecessary repetition of sentences, phrases, or content "
             "words from the story so far. Introduce a new event, action, or "
-            "detail when it fits naturally. Vary the subject and verb where "
-            "possible, but keep the narrative coherent. Avoid formulas, "
-            "questions, technical language, Markdown, numbered lists, headings, "
-            "and dictionary-like text. Do not mention hidden messages. Use "
-            "complete sentences and maintain narrative continuity.\n"
+            "detail only when it fits the ongoing scene. Prefer complete "
+            "sentences with clear people or things doing meaningful actions; "
+            "use natural transitions and varied sentence structure. Do not "
+            "stack adjectives, synonyms, or comma-separated fragments. Avoid "
+            "formulas, questions, technical language, Markdown, numbered lists, "
+            "headings, and dictionary-like text. Do not mention hidden messages. "
+            "Maintain narrative continuity.\n"
             "Story so far:\n"
             f"{story}"
         )
@@ -289,6 +298,35 @@ class EmbedderLLM:
             )
             score -= min(0.58, 0.07 * repeated_phrase_count)
 
+        candidate_words = re.findall(r"[A-Za-z]+", token.lower())
+        previous_words = re.findall(r"[A-Za-z]+", story.lower())
+
+        # Catch inflectional and derivational repeats such as "enlighten /
+        # enlightening / enlightenment" without requiring a heavyweight NLP
+        # package or another model call.
+        previous_stems = Counter(
+            self._word_stem(word)
+            for word in previous_words
+            if len(word) >= 5 and word not in self.STOPWORDS
+        )
+        repeated_stems = sum(
+            min(3, previous_stems[self._word_stem(word)])
+            for word in candidate_words
+            if len(word) >= 5
+            and word not in self.STOPWORDS
+            and previous_stems[self._word_stem(word)]
+        )
+        score -= min(0.65, 0.22 * repeated_stems)
+
+        # Repeated short frames (for example, "a new ...") can make a story
+        # read like a list even when each following noun is different.
+        repeated_collocations = max(
+            0,
+            self._repeated_collocation_count(words)
+            - self._repeated_collocation_count(previous_words),
+        )
+        score -= min(0.65, 0.24 * repeated_collocations)
+
         # Repeated names and named entities make a cover read like a broken
         # summary even when the individual words are otherwise common.
         proper_words = re.findall(r"\b[A-Z][a-z]{2,}\b", text)
@@ -320,10 +358,9 @@ class EmbedderLLM:
         # Keep this as a ranking penalty so fixed-position candidates remain
         # available when no cleaner token can carry the required character.
         if candidate_words:
-            previous_words = words[:-len(candidate_words)]
             recent_content_words = {
-                word
-                for word in previous_words[-18:]
+                self._word_stem(word)
+                for word in previous_words[-24:]
                 if len(word) >= 4 and word not in self.STOPWORDS
             }
             repeated_candidate_words = sum(
@@ -331,9 +368,9 @@ class EmbedderLLM:
                 for word in candidate_words
                 if len(word) >= 4
                 and word not in self.STOPWORDS
-                and word in recent_content_words
+                and self._word_stem(word) in recent_content_words
             )
-            score -= min(0.18, 0.06 * repeated_candidate_words)
+            score -= min(0.36, 0.12 * repeated_candidate_words)
 
         # Avoid starting several consecutive sentences with the same content
         # word. This catches flat generated prose without banning pronouns or
@@ -367,7 +404,7 @@ class EmbedderLLM:
         # Candidate should not repeatedly introduce the same word.
         # --------------------------------------------------------------
 
-        recent_words = words[-8:]
+        recent_words = previous_words[-8:]
 
         for word in candidate_words:
 
@@ -377,6 +414,52 @@ class EmbedderLLM:
                 and word not in self.STOPWORDS
             ):
                 score -= 0.18
+
+        # A long run of commas plus descriptive words is a strong signal that
+        # the carrier is turning into a synonym/adjective list. Penalize only
+        # additions that continue that pattern so ordinary commas remain fine.
+        sentence_fragment = re.split(r"[.!?]", story)[-1][-180:]
+
+        def listiness(fragment: str) -> float:
+            comma_count = fragment.count(",")
+            descriptive_words = sum(
+                1
+                for word in re.findall(r"[A-Za-z]+", fragment.lower())
+                if self._is_adjective_like(word)
+            )
+            if comma_count < 2 or descriptive_words < 3:
+                return 0.0
+            return min(
+                0.5,
+                0.12 * (comma_count - 1) + 0.10 * descriptive_words,
+            )
+
+        score -= max(
+            0.0,
+            listiness(sentence_fragment + token) - listiness(sentence_fragment),
+        )
+
+        # Favor a grammatically plausible continuation of an unfinished
+        # phrase, and avoid punctuation that leaves a determiner/preposition
+        # stranded. This is a lightweight boundary heuristic, not a hard gate.
+        previous_fragment_words = re.findall(r"[A-Za-z]+", sentence_fragment.lower())
+        if previous_fragment_words and candidate_words:
+            previous_word = previous_fragment_words[-1]
+            first_candidate_word = candidate_words[0]
+            if previous_word in {
+                "a", "an", "the", "this", "these", "those", "to", "of",
+                "for", "with", "by", "into", "from", "while", "because",
+            }:
+                if token.lstrip().startswith((",", ";", ":")):
+                    score -= 0.3
+                elif first_candidate_word in self.STOPWORDS:
+                    score -= 0.06
+
+        if story.rstrip().endswith((".", "!", "?")) and token.lstrip()[:1].islower():
+            score -= 0.12
+
+        if re.match(r"\s*(?:meanwhile|later|afterward|eventually|by then)\b", token, re.I):
+            score += 0.08
 
         # --------------------------------------------------------------
         # Topic relevance.
@@ -391,7 +474,9 @@ class EmbedderLLM:
             if len(word) >= 4
         }
 
-        if topic_words.intersection(candidate_words):
+        topic_stems = {self._word_stem(word) for word in topic_words}
+        candidate_stems = {self._word_stem(word) for word in candidate_words}
+        if topic_words.intersection(candidate_words) or topic_stems.intersection(candidate_stems):
             score += 0.2
 
         # --------------------------------------------------------------
@@ -429,6 +514,36 @@ class EmbedderLLM:
             score += 0.05
 
         return max(0.0, min(1.0, score))
+
+    @staticmethod
+    def _word_stem(word: str) -> str:
+        """Normalize common English inflections for inexpensive repetition checks."""
+
+        value = word.lower()
+        for suffix in (
+            "ational", "fulness", "iveness", "ment", "ness",
+            "ation", "ition", "ingly", "edly", "ing",
+            "izes", "ied", "ies", "ed", "ly", "es", "s",
+            "ity",
+        ):
+            if value.endswith(suffix) and len(value) - len(suffix) >= 4:
+                value = value[: -len(suffix)]
+                if value.endswith("i") and suffix in {"ied", "ies"}:
+                    value += "y"
+                break
+        if value.endswith("e") and len(value) > 4:
+            value = value[:-1]
+        return value
+
+    @classmethod
+    def _is_adjective_like(cls, word: str) -> bool:
+        return (
+            word in cls.ADJECTIVE_LIKE_WORDS
+            or any(
+                word.endswith(suffix) and len(word) > len(suffix) + 2
+                for suffix in cls.ADJECTIVE_LIKE_SUFFIXES
+            )
+        )
 
     @staticmethod
     def _needs_completion(story: str) -> bool:
@@ -597,6 +712,7 @@ class EmbedderLLM:
             for count in Counter(ngrams).values()
             if count > 1
         )
+        repeated_collocation_count = cls._repeated_collocation_count(words)
 
         # --------------------------------------------------------------
         # Technical/malformed text
@@ -640,6 +756,7 @@ class EmbedderLLM:
                 and not repeated_nearby
                 and dominant_content_word <= 5
                 and repeated_phrase_count <= 2
+                and repeated_collocation_count <= 1
             ),
             "sentence_completeness": sentence_complete,
             "malformed_or_technical": (
@@ -647,6 +764,19 @@ class EmbedderLLM:
                 and not technical_pattern
             ),
         }
+
+    @classmethod
+    def _repeated_collocation_count(cls, words: Sequence[str]) -> int:
+        bigrams = zip(words, words[1:])
+        return sum(
+            count - 1
+            for bigram, count in Counter(bigrams).items()
+            if any(
+                len(word) >= 3 and word not in cls.STOPWORDS
+                for word in bigram
+            )
+            and count > 1
+        )
 
     def _complete_cover_text(
         self,
@@ -657,60 +787,37 @@ class EmbedderLLM:
         if not self._needs_completion(story):
             return story
 
-        for temperature, top_k in (
-            (0.75, 60),
-            (0.85, 60),
-            (0.90, 60),
-            (0.80, 60),
-        ):
-            candidate_story = story
+        token_limit = min(max_tokens, 48)
+        if token_limit <= 0:
+            raise ValueError("max_tokens must be > 0")
 
-            for _ in range(max_tokens):
-                candidates = self.llm_generator.get_next_token_candidates(
-                    prompt=self._model_prompt(topic, candidate_story),
-                    top_k=top_k,
-                    temperature=temperature,
-                )
+        print(
+            f"Completing carrier-text ending (one generation, "
+            f"up to {token_limit} tokens)...",
+            flush=True,
+        )
+        continuation = self.llm_generator.generate(
+            prompt=self._model_prompt(topic, story),
+            temperature=0.75,
+            top_k=60,
+            max_new_tokens=token_limit,
+            repetition_penalty=1.1,
+            no_repeat_ngram_size=3,
+        ).strip()
 
-                if not candidates:
-                    break
+        if not continuation:
+            logger.warning(
+                "LLM returned no carrier-text ending; closing the existing "
+                "cover with punctuation."
+            )
+            completed_story = story.rstrip()
+        else:
+            separator = "" if story.endswith((" ", "\n", "\t")) else " "
+            completed_story = story + separator + continuation
 
-                valid = []
-                for candidate in candidates:
-                    token = candidate.token
-                    if not token:
-                        continue
-
-                    next_story = candidate_story + token
-                    if self._is_repetitive_continuation(candidate_story, token):
-                        continue
-
-                    valid.append(candidate)
-
-                if not valid:
-                    break
-
-                normal = self._select_normal_candidate(
-                    story=candidate_story,
-                    candidates=valid,
-                    topic=topic,
-                )
-
-                if normal is None:
-                    break
-
-                candidate_story += normal.token
-
-                if not self._needs_completion(candidate_story):
-                    return candidate_story
-
-            if not self._needs_completion(candidate_story):
-                return candidate_story
-
-        ended = story.rstrip()
-        if ended and ended[-1] not in ".!?\"'”’":
-            ended += "."
-        return ended
+        if self._needs_completion(completed_story):
+            completed_story = completed_story.rstrip() + "."
+        return completed_story
 
     def _score_candidate(
         self,

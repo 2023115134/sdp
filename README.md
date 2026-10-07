@@ -318,3 +318,16 @@ This recovers the embedded character sequence using the same positions and story
 ## Status
 
 The Phase 1 implementation is complete, and the test suite is intended to pass once the Python dependencies are installed in a working interpreter environment.
+
+
+
+
+Run the server using these commands:
+
+Terminal 1 — Server B:
+
+.\.venv\Scripts\python.exe server_b.py
+
+Terminal 2 — ECDHE demo:
+
+.\.venv\Scripts\python.exe -m app.demo --mode ecdhe --topic "A quiet city street at dusk" --secret HI
