@@ -26,6 +26,17 @@ from app.config import DEFAULT_LLM_CONFIG
 
 logger = logging.getLogger(__name__)
 
+for _logger_name in (
+    "httpx",
+    "httpcore",
+    "urllib3",
+    "requests",
+    "huggingface_hub",
+    "transformers",
+    "filelock",
+):
+    logging.getLogger(_logger_name).setLevel(logging.WARNING)
+
 
 @dataclass
 class TokenCandidate:

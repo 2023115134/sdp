@@ -239,6 +239,12 @@ run `.\.venv\Scripts\python.exe server_a.py`; it asks for the topic and secret
 when they were not supplied as arguments. `app.demo` accepts the same sender
 arguments but always connects to an already-running Server B.
 
+In interactive ECDHE mode, Server A connects and completes the peer-confirmed
+X25519 exchange before prompting for the secret. It sends the KDF salt and
+derives DK1/DK2 only after the user enters that message. Supplying `--message`
+or `--secret` bypasses the prompt, but the message is still not encrypted or
+sent until key confirmation succeeds.
+
 In ECDHE mode, the peers exchange their X25519 public keys as ten alternating
 LLM-generated cover-text messages: each side splits its key into five
 segments, maps each segment, embeds it with `EmbedderLLM`, and sends the
@@ -256,8 +262,8 @@ previously shared secret on both servers if the key-carrier positions need to
 be confidential. X25519 public-key authentication against an active
 man-in-the-middle is not provided by this demo.
 
-Set the optional bootstrap secret in both terminals for separate processes, or
-once in the environment for the coordinated demo:
+Set the optional bootstrap secret in both terminals when running separate
+processes:
 
 ```powershell
 $env:LLM_SHIELD_PREVIOUS_SHARED_SECRET = "your previously shared secret"
@@ -275,9 +281,16 @@ authentication tag and ciphertext; for `HI` it is 36 h4 characters. DK2
 drives SHAKE-128 position generation. Server A embeds the mapped secret
 payload with `EmbedderLLM` and sends the cover text to Server B, which
 regenerates positions, extracts, inverse maps, authenticates, and decrypts it.
-The terminals show compact per-carrier progress instead of printing every
-embedded character, position, derived key, and cipher intermediate. Restart
-Server B before each new one-shot connection.
+Server A prints the live, character-by-character progress for the encrypted
+message payload; Server B identifies the carrier as sender-generated and
+prints the received text, extracted data, authentication result, and final
+verification. Restart Server B before each new one-shot connection.
+
+The mapped message length is computed from the actual UTF-8 plaintext size:
+two h4 characters per encrypted byte, including the 16-byte GCM tag. For
+example, the two-byte plaintext `HI` produces 36 mapped characters. A 28-
+character frame can instead be one of the 7-byte X25519 public-key segments
+used during the ECDHE handshake; the payload length is never hard-coded.
 
 The in-process, bidirectional HKDF example remains available in
 `python -m app.crypto.ecdhe_demo`:
@@ -345,10 +358,10 @@ The Phase 1 implementation is complete, and the test suite is intended to pass o
 
 Run the server using these commands:
 
-Terminal 1 — Server B: . 
+Terminal 1 — Server B:
 
 .\.venv\Scripts\python.exe server_b.py
 
-Terminal 2 — ECDHE demo:
+Terminal 2 — Server A:
 
-.\.venv\Scripts\python.exe -m app.demo --mode ecdhe --topic "A quiet city street at dusk" --secret HI
+.\.venv\Scripts\python.exe server_a.py --mode ecdhe --topic "A quiet city street at dusk" --secret HI

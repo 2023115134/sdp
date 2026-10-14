@@ -75,7 +75,13 @@ def test_two_server_pipeline_round_trip_hi(mode, position_shift, secret, monkeyp
     monkeypatch.setattr(generator, "LLMGenerator", _FakeGenerator)
     monkeypatch.setattr(_FakeEmbedder, "position_shift", position_shift)
     _FakeEmbedder.embedded_lengths = []
-    monkeypatch.setattr("server_b.getpass.getpass", lambda prompt: "test-password")
+    output_before_psk_prompt = []
+
+    def enter_psk_password(prompt):
+        output_before_psk_prompt.append(capsys.readouterr().out)
+        return "test-password"
+
+    monkeypatch.setattr("server_b.getpass.getpass", enter_psk_password)
 
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
@@ -119,15 +125,41 @@ def test_two_server_pipeline_round_trip_hi(mode, position_shift, secret, monkeyp
     assert _FakeEmbedder.actual_positions == expected_positions
     if not position_shift:
         assert _FakeEmbedder.actual_positions == _FakeEmbedder.requested_positions
-    output = capsys.readouterr().out
+    output = "".join(output_before_psk_prompt) + capsys.readouterr().out
+    if mode == "psk":
+        assert "[1] INPUT" not in output_before_psk_prompt[0]
     if mode == "ecdhe":
         assert "ECDHE key exchange complete (10 alternating carriers)" in output
         assert "Carrier 1/10 sent (Server A)" in output
         assert "Carrier 2/10 received (Server B)" in output
     assert "LLM embedding: 36/36 characters (embedded)" in output
     assert f"{mode.upper()} carrier sent to Server B." in output
-    assert f"Received and authenticated message: {secret}" in output
+    assert f"Recovered plaintext       : {secret}" in output
     assert "AES-256-GCM authentication: PASS" in output
+    assert "Secret message : encrypted; unavailable until AES-GCM verification" in output
+    assert "Sender-confirmed plaintext equality          : PASS" in output
+    section_titles = [
+        "INPUT",
+        "KEY ESTABLISHMENT",
+        "PBKDF2 KEY DERIVATION",
+        "AES-256-GCM / AEAD ENCRYPTION",
+        "PAYLOAD MAPPING",
+        "SHAKE-128 POSITION GENERATION",
+        "EMBEDDERLLM / QWEN",
+        "EXTRACTION",
+        "INVERSE MAPPING",
+        "AEAD DECRYPTION",
+        "END-TO-END VERIFICATION",
+    ]
+    section_positions = [
+        output.index(f"[{number}] {title}")
+        for number, title in enumerate(section_titles, start=1)
+    ]
+    assert section_positions == sorted(section_positions)
+    assert output.index("Secret message : encrypted; unavailable until AES-GCM verification") < output.index(
+        "AES-256-GCM authentication: PASS"
+    ) < output.index("Recovered plaintext")
+    assert "LLM inference call" not in output
     assert "Embedding 1/" not in output
     assert "Character stats:" not in output
 
@@ -167,12 +199,19 @@ def test_ecdhe_requests_secret_only_after_public_key_carriers_and_key_confirmati
         return "HI"
 
     monkeypatch.setattr(builtins, "input", enter_secret)
-    send_message(
-        "127.0.0.1",
-        port,
-        "",
-        "A quiet city street at dusk",
-        mode="ecdhe",
+    from server_a import main as server_a_main
+
+    server_a_main(
+        [
+            "--mode",
+            "ecdhe",
+            "--topic",
+            "A quiet city street at dusk",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+        ]
     )
     thread.join(timeout=5)
 
@@ -181,7 +220,144 @@ def test_ecdhe_requests_secret_only_after_public_key_carriers_and_key_confirmati
     assert len(_FakeEmbedder.embedded_lengths) == 11
     assert len(prompt_output) == 1
     assert "ECDHE key exchange complete (10 alternating carriers)" in prompt_output[0]
-    assert "Received and authenticated message: HI" in capsys.readouterr().out
+    assert "ECDHE public-key exchange and key confirmation: PASS" in prompt_output[0]
+    assert "TCP public-key exchange: PASS" in prompt_output[0]
+    assert "Shared secrets match: PASS" in prompt_output[0]
+    assert "X25519 shared-secret agreement: PASS" in prompt_output[0]
+    assert "[3] PBKDF2 KEY DERIVATION" not in prompt_output[0]
+    assert "Recovered plaintext       : HI" in capsys.readouterr().out
+
+
+def test_failed_ecdhe_confirmation_does_not_prompt_encrypt_or_send_payload(
+    monkeypatch,
+):
+    import builtins
+
+    from app.llm import embedder, generator
+    import server_a
+    import server_b
+
+    monkeypatch.setattr(embedder, "EmbedderLLM", _FakeEmbedder)
+    monkeypatch.setattr(generator, "LLMGenerator", _FakeGenerator)
+
+    original_confirmation = server_b.key_confirmation
+
+    def invalid_server_b_confirmation(secret, role, public_a, public_b):
+        confirmation = original_confirmation(secret, role, public_a, public_b)
+        if role == "server_b":
+            return "0" * 64
+        return confirmation
+
+    monkeypatch.setattr(server_b, "key_confirmation", invalid_server_b_confirmation)
+    prompt_calls = []
+    monkeypatch.setattr(
+        builtins,
+        "input",
+        lambda prompt: prompt_calls.append(prompt) or "must-not-be-requested",
+    )
+    encrypt_calls = []
+    monkeypatch.setattr(
+        server_a,
+        "encrypt",
+        lambda *args, **kwargs: encrypt_calls.append((args, kwargs)),
+    )
+    send_json = server_a.send_json
+    sent_types = []
+
+    def record_sent_frame(connection, frame):
+        sent_types.append(frame.get("type"))
+        send_json(connection, frame)
+
+    monkeypatch.setattr(server_a, "send_json", record_sent_frame)
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    receiver_errors = []
+
+    def receiver():
+        try:
+            receive_message("127.0.0.1", port)
+        except Exception as error:
+            receiver_errors.append(error)
+
+    thread = threading.Thread(target=receiver)
+    thread.start()
+    time.sleep(0.05)
+
+    with pytest.raises(ValueError, match="Server B key confirmation failed"):
+        send_message(
+            "127.0.0.1",
+            port,
+            "",
+            "A quiet city street at dusk",
+            mode="ecdhe",
+        )
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert receiver_errors
+    assert not prompt_calls
+    assert not encrypt_calls
+    assert "kdf_salt" not in sent_types
+    assert "covert_payload" not in sent_types
+
+
+def test_receiver_does_not_reveal_plaintext_when_aead_authentication_fails(
+    monkeypatch, capsys
+):
+    from app.llm import embedder, generator
+    import server_a
+
+    monkeypatch.setattr(embedder, "EmbedderLLM", _FakeEmbedder)
+    monkeypatch.setattr(generator, "LLMGenerator", _FakeGenerator)
+    monkeypatch.setattr("server_b.getpass.getpass", lambda prompt: "shared-test-password")
+    send_json = server_a.send_json
+
+    def send_tampered_nonce(connection, message):
+        if message.get("type") == "covert_payload":
+            message = dict(message)
+            nonce = bytearray.fromhex(message["nonce"])
+            nonce[0] ^= 1
+            message["nonce"] = bytes(nonce).hex()
+        send_json(connection, message)
+
+    monkeypatch.setattr(server_a, "send_json", send_tampered_nonce)
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    errors = []
+
+    def receiver():
+        try:
+            receive_message("127.0.0.1", port)
+        except Exception as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=receiver)
+    thread.start()
+    time.sleep(0.05)
+
+    with pytest.raises(OSError):
+        send_message(
+            "127.0.0.1",
+            port,
+            "do-not-reveal",
+            "A quiet city street at dusk",
+            mode="psk",
+            password="shared-test-password",
+        )
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert errors and "authentication failed" in str(errors[0]).lower()
+    output = capsys.readouterr().out
+    assert "AES-256-GCM authentication: FAIL" in output
+    assert "Recovered plaintext" not in output
+    assert "do-not-reveal" not in output
 
 
 @pytest.mark.parametrize("mode", ["psk", "ecdhe"])

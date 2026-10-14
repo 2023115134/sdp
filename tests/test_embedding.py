@@ -42,6 +42,36 @@ def test_embedder_success_and_failure_paths():
     assert len(positions) >= 4
 
 
+def test_verbose_embedding_reports_character_and_retry_without_inference_start_logs(
+    monkeypatch, capsys
+):
+    embedder = EmbedderLLM()
+
+    def embed_at_target(**kwargs):
+        story = kwargs["story"]
+        position = kwargs["position"]
+        return story.ljust(position) + kwargs["character"]
+
+    monkeypatch.setattr(embedder, "_generate_to_position", embed_at_target)
+    result = embedder.embed(
+        topic="quiet city",
+        characters="Q",
+        positions=[20],
+        initial_story="A",
+        verbose=True,
+    )
+
+    output = capsys.readouterr().out
+    assert result.story[20] == "Q"
+    assert "Embedding 1/1" in output
+    assert "Character: Q" in output
+    assert "Position: 20" in output
+    assert "Retry 1: T=0.70 k=40" in output
+    assert "Status: Embedded successfully" in output
+    assert "Character stats: LLM calls=0, candidate evaluations=0, retries=1" in output
+    assert "LLM inference call" not in output
+
+
 def test_end_to_end_mapping_and_extraction_pipeline():
     mapper = CharacterMap()
     secret = "HELLO"

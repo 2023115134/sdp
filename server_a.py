@@ -107,30 +107,18 @@ def send_message(
         _print_section(1, "INPUT")
         print(f"  Mode           : {mode.upper()}")
         print(f"  Topic          : {topic}")
-        print(f"  Secret message : {message if message else '<prompt after key setup>'}")
+        secret_label = (
+            "<available after ECDHE key exchange>"
+            if mode == "ecdhe"
+            else message if message else "<not entered>"
+        )
+        print(f"  Secret message : {secret_label}")
         print("  PSK password   : <hidden>" if mode == "psk" else "  PSK password   : not used")
     print(f"Server A starting {mode.upper()} session with {host}:{port}", flush=True)
 
     private_key: bytes | None = None
     public_key: bytes | None = None
-    if mode == "ecdhe" and (llm_generator is None or key_embedder is None):
-        private_key, public_key = generate_key_pair()
-        from app.llm.embedder import EmbedderLLM
-        from app.llm.generator import LLMGenerator
-
-        if llm_generator is None:
-            llm_generator = LLMGenerator()
-        if key_embedder is None:
-            key_embedder = EmbedderLLM(
-                llm_generator=llm_generator,
-                character_map=CharacterMap(),
-            )
-    elif mode == "ecdhe":
-        private_key, public_key = generate_key_pair()
-    else:
-        private_key = None
-        public_key = None
-
+    print(f"Connecting to Server B at {host}:{port}...", flush=True)
     try:
         connection = socket.create_connection((host, port), timeout=15)
     except OSError as error:
@@ -142,6 +130,18 @@ def send_message(
     with connection:
         connection.settimeout(600)
         print(f"TCP connection to Server B ({host}:{port}): PASS", flush=True)
+        if mode == "ecdhe":
+            private_key, public_key = generate_key_pair()
+            from app.llm.embedder import EmbedderLLM
+            from app.llm.generator import LLMGenerator
+
+            if llm_generator is None:
+                llm_generator = LLMGenerator()
+            if key_embedder is None:
+                key_embedder = EmbedderLLM(
+                    llm_generator=llm_generator,
+                    character_map=CharacterMap(),
+                )
         session_id: bytes | None = None
         carrier_dk1: bytes | None = None
         carrier_dk2: bytes | None = None
@@ -168,23 +168,6 @@ def send_message(
             own_segments = split_public_key(public_key)
             peer_segments: list[bytes] = []
             for segment_index, own_segment in enumerate(own_segments):
-                def report_key_progress(
-                    completed: int,
-                    total: int,
-                    status: str,
-                ) -> None:
-                    if not status.startswith("LLM inference"):
-                        if demonstration:
-                            return
-                        print(
-                            f"\rEmbedding Server A key segment "
-                            f"{segment_index + 1}/5: {completed}/{total} ({status})",
-                            end="",
-                            flush=True,
-                        )
-                        return
-                    print(f"\n  {status}", flush=True)
-
                 own_frame = embed_public_key_segment(
                     own_segment,
                     role="server_a",
@@ -192,8 +175,7 @@ def send_message(
                     topic=topic,
                     position_key=carrier_dk1,
                     embedder=key_embedder,
-                    verbose=demonstration,
-                    progress_callback=report_key_progress,
+                    verbose=False,
                 )
                 print()
                 send_json(connection, own_frame)
@@ -246,9 +228,13 @@ def send_message(
             ):
                 raise ValueError("Server B key confirmation failed")
             print("ECDHE public-key exchange and key confirmation: PASS")
+            print("TCP public-key exchange: PASS")
+            print("Shared secrets match: PASS")
             if demonstration:
                 print(f"  Server B public key ({len(peer_public_key)} bytes): {peer_public_key.hex()}")
                 print("  X25519 shared-secret agreement: PASS")
+            if not message.strip():
+                message = _prompt_nonempty("Enter secret message: ")
         else:
             shared_secret = b""
             if demonstration:
@@ -271,7 +257,7 @@ def send_message(
             from app.config import DEFAULT_PBKDF2_CONFIG, get_pbkdf2_iterations
 
             if mode == "psk":
-                print("  Both peers supplied matching password-derived key material.")
+                print("  Local derivation: complete; peer key agreement is checked by AEAD authentication.")
             _print_section(3, "PBKDF2 KEY DERIVATION")
             print(f"  Algorithm      : PBKDF2-HMAC-{DEFAULT_PBKDF2_CONFIG.hash_name.upper()}")
             print(f"  Iterations     : {get_pbkdf2_iterations():,}")
@@ -369,12 +355,8 @@ def send_message(
             total: int,
             status: str,
         ) -> None:
-            if status.startswith("LLM inference"):
-                print(f"\n  {status}", flush=True)
-            elif not demonstration:
-                progress = (
-                    f"LLM embedding: {completed}/{total} characters ({status})"
-                )
+            if not demonstration and status in {"embedding", "embedded"}:
+                progress = f"LLM embedding: {completed}/{total} characters ({status})"
                 print(f"\r{progress:<90}", end="", flush=True)
 
         embedding_started = time.perf_counter()
@@ -390,7 +372,7 @@ def send_message(
             max_retries=3,
             allow_adaptive_positions=True,
             verbose=demonstration,
-            progress_callback=report_payload_progress if demonstration else None,
+            progress_callback=report_payload_progress if not demonstration else None,
         )
         embedding_seconds = time.perf_counter() - embedding_started
         print()
@@ -435,6 +417,7 @@ def send_message(
                 "type": "covert_payload",
                 "mode": mode,
                 "mapped_length": len(mapped_payload),
+                "model_name": str(llm_generator.model_name),
                 "nonce": encrypted["nonce"].hex(),
                 "cover_text": result.story,
                 "target_positions": actual_positions,
@@ -454,15 +437,40 @@ def send_message(
         ):
             raise ValueError("Server B did not authenticate successful decryption")
         print("Server B authenticated successful decryption: PASS")
+        if message != plaintext.decode("utf-8"):
+            raise RuntimeError("sender plaintext changed during transmission")
+        sender_confirmation = hmac_new(
+            dk1,
+            b"llm-shield/tcp-ecdhe/sender-confirmation/v1"
+            + sha256(plaintext).digest(),
+            "sha256",
+        ).hexdigest()
+        send_json(
+            connection,
+            {"type": "sender_confirmation", "mac": sender_confirmation},
+        )
+        end_to_end_ack = receive_json(connection)
+        expected_end_to_end_ack = hmac_new(
+            dk1,
+            b"llm-shield/tcp-ecdhe/end-to-end-ack/v1"
+            + sha256(plaintext).digest(),
+            "sha256",
+        ).hexdigest()
+        end_to_end_mac = end_to_end_ack.get("mac")
+        if (
+            end_to_end_ack.get("type") != "end_to_end_ack"
+            or not isinstance(end_to_end_mac, str)
+            or not hmac.compare_digest(end_to_end_mac, expected_end_to_end_ack)
+        ):
+            raise ValueError("Server B did not confirm end-to-end plaintext equality")
         if demonstration:
-            if message != plaintext.decode("utf-8"):
-                raise RuntimeError("sender plaintext changed during transmission")
             _print_section(11, "END-TO-END VERIFICATION")
             print("  Receiver authenticated recovered message: PASS")
             print(
                 "  Recovered message matches sender input  : "
                 "PASS"
             )
+            print("  Server B confirmed plaintext equality    : PASS")
             print("  Overall result                         : PASS")
     print(f"{mode.upper()} carrier sent to Server B.")
 
@@ -478,7 +486,9 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     mode = args.mode or _prompt_for_mode()
     topic = args.topic.strip() or _prompt_nonempty("Enter topic: ")
-    message = args.message.strip() or _prompt_nonempty("Enter secret message: ")
+    message = args.message.strip()
+    if mode == "psk" and not message:
+        message = _prompt_nonempty("Enter secret message: ")
     password = getpass.getpass("Enter PSK password: ") if mode == "psk" else None
 
     try:
@@ -491,7 +501,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             password=password,
             demonstration=True,
         )
-    except (ConnectionError, OSError, TimeoutError) as error:
+    except (ConnectionError, OSError, TimeoutError, ValueError) as error:
         print(f"Session failed: {error}", file=sys.stderr, flush=True)
         raise SystemExit(1) from error
 
