@@ -11,6 +11,10 @@ from server_b import receive_message
 
 class _FakeGenerator:
     model_name = "test-model"
+    instances = 0
+
+    def __init__(self):
+        type(self).instances += 1
 
 
 class _FakeEmbedder:
@@ -25,6 +29,9 @@ class _FakeEmbedder:
 
     def embed(self, topic, characters, positions, initial_story, **kwargs):
         type(self).embedded_lengths.append(len(characters))
+        progress_callback = kwargs.get("progress_callback")
+        if progress_callback is not None:
+            progress_callback(0, len(characters), "embedding")
         type(self).requested_positions = list(positions)
         position_shift = (
             self.position_shift
@@ -38,6 +45,8 @@ class _FakeEmbedder:
             story.extend(" " * (positions[-1] + 1 - len(story)))
         for character, position in zip(characters, positions):
             story[position] = character
+        if progress_callback is not None:
+            progress_callback(len(characters), len(characters), "embedded")
         return SimpleNamespace(
             story="".join(story),
             positions=list(positions),
@@ -115,8 +124,10 @@ def test_two_server_pipeline_round_trip_hi(mode, position_shift, secret, monkeyp
         assert "ECDHE key exchange complete (10 alternating carriers)" in output
         assert "Carrier 1/10 sent (Server A)" in output
         assert "Carrier 2/10 received (Server B)" in output
-    assert "locally verified (36 mapped characters)" in output
+    assert "LLM embedding: 36/36 characters (embedded)" in output
+    assert f"{mode.upper()} carrier sent to Server B." in output
     assert f"Received and authenticated message: {secret}" in output
+    assert "AES-256-GCM authentication: PASS" in output
     assert "Embedding 1/" not in output
     assert "Character stats:" not in output
 
@@ -171,3 +182,42 @@ def test_ecdhe_requests_secret_only_after_public_key_carriers_and_key_confirmati
     assert len(prompt_output) == 1
     assert "ECDHE key exchange complete (10 alternating carriers)" in prompt_output[0]
     assert "Received and authenticated message: HI" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("mode", ["psk", "ecdhe"])
+def test_demo_cli_connects_to_external_receiver(mode, monkeypatch, capsys):
+    from app import demo
+    import server_a
+    import server_b
+
+    forwarded = {}
+    monkeypatch.setattr(server_a, "send_message", lambda *args, **kwargs: forwarded.update({
+        "args": args,
+        **kwargs,
+    }))
+    monkeypatch.setattr(
+        server_b,
+        "receive_message",
+        lambda *args, **kwargs: pytest.fail("app.demo must not start Server B"),
+    )
+    monkeypatch.setattr(demo.getpass, "getpass", lambda prompt: "do-not-print-this")
+    command = [
+        "--mode",
+        mode,
+        "--topic",
+        "A quiet city street at dusk",
+        "--secret",
+        "HI",
+    ]
+    demo.main(command)
+
+    assert forwarded["args"] == (
+        "127.0.0.1",
+        50505,
+        "HI",
+        "A quiet city street at dusk",
+    )
+    assert forwarded["mode"] == mode
+    assert forwarded["demonstration"] is True
+    assert forwarded["password"] == ("do-not-print-this" if mode == "psk" else None)
+    assert "do-not-print-this" not in capsys.readouterr().out

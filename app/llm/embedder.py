@@ -37,7 +37,7 @@ import re
 import time
 from collections import Counter
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Callable, Sequence
 
 from app.crypto.mapping import CharacterMap
 from app.llm.generator import LLMGenerator
@@ -826,6 +826,7 @@ class EmbedderLLM:
         token: str,
         probability: float,
         topic: str,
+        naturalness: float | None = None,
     ) -> float:
 
         probability = max(
@@ -839,11 +840,12 @@ class EmbedderLLM:
             min(1.0, (log_probability + 12.0) / 12.0),
         )
 
-        naturalness = self._candidate_naturalness(
-            story=story,
-            token=token,
-            topic=topic,
-        )
+        if naturalness is None:
+            naturalness = self._candidate_naturalness(
+                story=story,
+                token=token,
+                topic=topic,
+            )
 
         return (
             self.PROBABILITY_WEIGHT * probability_score
@@ -960,6 +962,7 @@ class EmbedderLLM:
                 token=token,
                 probability=candidate.probability,
                 topic=topic,
+                naturalness=naturalness,
             )
 
             if naturalness < 0.25:
@@ -1040,6 +1043,7 @@ class EmbedderLLM:
                 token=token,
                 probability=candidate.probability,
                 topic=topic,
+                naturalness=naturalness,
             )
 
             if naturalness < 0.25:
@@ -1499,7 +1503,15 @@ class EmbedderLLM:
                 if getattr(self, "_verbose", True):
                     print(
                         f"Retry {retry_number}: T={retry_temperature:.2f} "
-                        f"k={retry_top_k}"
+                        f"k={retry_top_k}",
+                        flush=True,
+                    )
+                progress_callback = getattr(self, "_progress_callback", None)
+                if progress_callback is not None:
+                    progress_callback(
+                        self._progress_completed,
+                        self._progress_total,
+                        f"retry {retry_number}",
                     )
 
                 story = original_story
@@ -1528,14 +1540,15 @@ class EmbedderLLM:
                         )
                     ):
                         if getattr(self, "_verbose", True):
-                            print("Status: Embedded successfully")
+                            print("Status: Embedded successfully", flush=True)
                             elapsed = time.perf_counter() - character_started
                             print(
                                 "Character stats: "
                                 f"LLM calls={self._embedding_stats['llm_calls'] - character_stats_start['llm_calls']}, "
                                 f"candidate evaluations={self._embedding_stats['candidate_evaluations'] - character_stats_start['candidate_evaluations']}, "
                                 f"retries={self._embedding_stats['retries'] - character_stats_start['retries']}, "
-                                f"time={elapsed:.2f}s"
+                                f"time={elapsed:.2f}s",
+                                flush=True,
                             )
                         return result
 
@@ -1545,17 +1558,22 @@ class EmbedderLLM:
                     "candidate rejected or generation did not reach the position",
                 )
                 if getattr(self, "_verbose", True):
-                    print(f"Candidate rejected: {last_failure_reason}")
-                    print("Retrying same character and position...")
+                    print(f"Candidate rejected: {last_failure_reason}", flush=True)
+                    print("Retrying same character and position...", flush=True)
 
         if getattr(self, "_verbose", True):
             elapsed = time.perf_counter() - character_started
+            print(
+                f"Status: FAILED to embed {character!r} at position {position}",
+                flush=True,
+            )
             print(
                 "Character stats: "
                 f"LLM calls={self._embedding_stats['llm_calls'] - character_stats_start['llm_calls']}, "
                 f"candidate evaluations={self._embedding_stats['candidate_evaluations'] - character_stats_start['candidate_evaluations']}, "
                 f"retries={self._embedding_stats['retries'] - character_stats_start['retries']}, "
-                f"time={elapsed:.2f}s"
+                f"time={elapsed:.2f}s",
+                flush=True,
             )
         raise RuntimeError(
             f"Unable to embed character '{character}' at position {position} "
@@ -1581,9 +1599,11 @@ class EmbedderLLM:
         deterministic: bool = False,
         allow_adaptive_positions: bool = False,
         verbose: bool = True,
+        progress_callback: Callable[[int, int, str], None] | None = None,
     ) -> EmbeddingResult:
 
         self._verbose = verbose
+        self._progress_callback = progress_callback
         self._validate_inputs(
             topic=topic,
             characters=characters,
@@ -1643,6 +1663,8 @@ class EmbedderLLM:
         }
 
         positions = list(positions)
+        self._progress_completed = 0
+        self._progress_total = len(characters)
 
         # --------------------------------------------------------------
         # Embed every character sequentially.
@@ -1658,12 +1680,15 @@ class EmbedderLLM:
             )
         ):
 
+            self._progress_current = index + 1
+            if progress_callback is not None:
+                progress_callback(index, len(characters), "embedding")
             if verbose:
                 display_char = "SPACE" if character == " " else character
-                print("--------------------------------------------------")
-                print(f"Embedding {index + 1}/{len(characters)}")
-                print(f"Character: {display_char}")
-                print(f"Position: {position}")
+                print("------------------------------------------------------------", flush=True)
+                print(f"Embedding {index + 1}/{len(characters)}", flush=True)
+                print(f"Character: {display_char}", flush=True)
+                print(f"Position: {position}", flush=True)
 
             # The current story must never already be beyond target.
             if len(story) > position:
@@ -1689,6 +1714,8 @@ class EmbedderLLM:
                 )
             except RuntimeError as exc:
                 if not allow_adaptive_positions:
+                    if verbose:
+                        print(f"Status: FAILED ({exc})", flush=True)
                     raise
                 logger.warning(
                     "Fixed position %d was unreachable for %r; "
@@ -1710,6 +1737,11 @@ class EmbedderLLM:
                     following_gap=following_gap,
                 )
                 if adaptive_result is None:
+                    if verbose:
+                        print(
+                            f"Status: FAILED (adaptive placement: {self._last_failure_reason})",
+                            flush=True,
+                        )
                     raise RuntimeError(
                         f"{exc} Adaptive placement also failed: "
                         f"{self._last_failure_reason}."
@@ -1723,9 +1755,17 @@ class EmbedderLLM:
                 if verbose:
                     print(
                         f"Adaptive placement: using natural character at position "
-                        f"{adaptive_position}; shifted following positions by {delta}"
+                        f"{adaptive_position}; shifted following positions by {delta}",
+                        flush=True,
+                    )
+                    print(
+                        "Status: Embedded successfully (adaptive placement)",
+                        flush=True,
                     )
             total_attempt_counter[0] += character_attempt_counter[0]
+            self._progress_completed = index + 1
+            if progress_callback is not None:
+                progress_callback(index + 1, len(characters), "embedded")
 
             # Immediate verification.
             if (
@@ -1735,11 +1775,17 @@ class EmbedderLLM:
                     character,
                 )
             ):
-
+                if verbose:
+                    print(
+                        f"Status: FAILED validation at position {position}",
+                        flush=True,
+                    )
                 raise RuntimeError(
                     f"Embedding validation failed at "
                     f"position {position}."
                 )
+            if verbose:
+                print("------------------------------------------------------------", flush=True)
 
         # --------------------------------------------------------------
         # Final validation.

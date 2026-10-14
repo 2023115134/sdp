@@ -110,6 +110,29 @@ def test_embedding_candidate_prefers_natural_phrase_over_repeated_frame():
     assert (story + selected[1].token)[len(story) + 2] == "n"
 
 
+def test_embedding_candidate_reuses_naturalness_for_candidate_score(monkeypatch):
+    embedder = EmbedderLLM()
+    calls = []
+    original_naturalness = embedder._candidate_naturalness
+
+    def count_naturalness(*, story, token, topic):
+        calls.append(token)
+        return original_naturalness(story=story, token=token, topic=topic)
+
+    monkeypatch.setattr(embedder, "_candidate_naturalness", count_naturalness)
+    token = _FakeCandidate(" quiet")
+    selected = embedder._select_embedding_candidate(
+        story="A",
+        candidates=[token],
+        character="q",
+        position=2,
+        topic="quiet city",
+    )
+
+    assert selected is not None
+    assert calls == [" quiet"]
+
+
 def test_cover_naturalness_flags_repeated_short_phrase_frames():
     story = (
         "The student saw a new book, a new class, a new desk, "

@@ -139,41 +139,32 @@ This uses one hidden character, `E`, at position `50`. It has bounded retries an
 
 This independently extracts and decodes the known `HELLO` payload.
 
-### Stage 4: Run the complete demo
+### Stage 4: Run the TCP demonstration
+
+Start the receiver in Terminal 1 and leave it listening:
 
 ```powershell
-.\.venv\Scripts\python.exe -m app.demo
+.\.venv\Scripts\python.exe server_b.py
 ```
 
-The demo first prompts for PSK or ECDHE, followed by topic and secret message.
-It connects to Server B for either mode. Run Server B in another terminal
-with `.\.venv\Scripts\python.exe server_b.py` before starting the demo.
+Then run the sender in Terminal 2. The normal `app.demo` command is an
+optional sender client and does not start a receiver:
 
-The demo performs:
-
-```text
-secret message
-	-> h4 character mapping
-	-> PBKDF2-derived DK1/DK2
-	-> AES-256-GCM encryption
-	-> h4 character mapping
-	-> SHAKE-128 position generation
-	-> fixed target positions
-	-> Qwen candidate-token embedding
-	-> TCP cover-text transmission
-	-> position-based extraction
-	-> inverse mapping
-	-> AES-GCM authentication and decryption
-	-> recovered message
+```powershell
+.\.venv\Scripts\python.exe -m app.demo --mode ecdhe --topic "A quiet city street at dusk" --secret "HI"
 ```
 
-The final successful line is:
+The equivalent direct sender command is
+`.\.venv\Scripts\python.exe server_a.py --mode ecdhe --topic "A quiet city street at dusk" --secret "HI"`.
+Use `--mode psk` instead for password-based key establishment; enter the same
+password at both terminals when prompted. Password input is hidden and must
+not be passed as a command-line argument.
 
-```text
-END-TO-END TEST: PASS
-```
-
-The demo automatically uses the best available backend. Set `LLM_DEVICE=cpu` to force CPU execution, or `LLM_DEVICE=cuda` / `LLM_DEVICE=cuda:0` to request a specific CUDA device. If CUDA is requested but unavailable, the generator logs a warning and falls back to CPU. Longer secrets and fixed-position candidate searches can take time. Do not start multiple demo processes at the same time.
+The demo automatically selects an available LLM backend. Set `LLM_DEVICE=cpu`
+to force CPU execution or `LLM_DEVICE=cuda` / `LLM_DEVICE=cuda:0` to request
+CUDA. Longer messages require more generation and may take longer. The
+embedding candidate scorer reuses its already-computed naturalness score
+instead of rescoring the same candidate.
 
 The active backend is logged when the model loads. To use an NVIDIA GPU, install a CUDA-enabled PyTorch wheel for the selected Python environment; `torch>=2.2.0` alone may resolve to a CPU-only wheel on some platforms. `LLM_CPU_THREADS` can optionally set the number of CPU threads when CPU execution is selected.
 
@@ -195,14 +186,16 @@ Run the complete compile check:
 .\.venv\Scripts\python.exe -m py_compile app/config.py app/crypto/mapping.py app/crypto/position_generator.py app/llm/generator.py app/llm/embedder.py app/extraction/extractor.py app/evaluation/metrics.py app/evaluation/naturalness.py app/demo.py
 ```
 
-Run the tests and official fixed-position demo:
+Run the tests and then follow the two-terminal TCP demonstration above:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\python.exe -m app.demo
 ```
 
-The demo reports original and mapped secrets, deterministic positions, every embedding-position check, generated cover text, extraction results, naturalness validation, performance, and the final `END-TO-END TEST: PASS` or `FAIL` result. Final PASS requires both exact recovery and passing naturalness checks.
+The sender and receiver print the live TCP handshake, derivation, AEAD, mapping, embedding,
+extraction, authenticated recovery, and end-to-end verification. The secret is
+printed only in the sender's input section and by the receiver after successful
+AES-GCM authentication; the PSK is never printed.
 
 ## Quick Qwen generation
 
@@ -220,9 +213,8 @@ For a short generation-only check:
 
 ## PSK and ECDHE TCP communication
 
-Both modes use the same detailed LLM-SHIELD stages and run between separate
-Server A and Server B processes. From the project folder, start the receiver
-first in one PowerShell terminal:
+Both modes use the same TCP protocol between Server A and Server B. Start
+Server B first in one PowerShell terminal:
 
 ```powershell
 .\.venv\Scripts\python.exe server_b.py
@@ -240,12 +232,12 @@ For PSK, use the same command with `--mode psk`:
 .\.venv\Scripts\python.exe server_a.py --mode psk --message HI --topic "A quiet city street at dusk"
 ```
 
-Server B listens on `127.0.0.1:50505` by default. In PSK mode, enter the same
+Server B listens on `127.0.0.1:50505` by default and handles one connection
+per process; restart it for another session. In PSK mode, enter the same
 password at both terminals when prompted. To use the interactive mode picker,
-run `.\.venv\Scripts\python.exe server_a.py` or
-`.\.venv\Scripts\python.exe -m app.demo`; choose mode and enter the topic.
-If `--message` / `--secret` is omitted, the sender asks for the secret only
-after key establishment completes.
+run `.\.venv\Scripts\python.exe server_a.py`; it asks for the topic and secret
+when they were not supplied as arguments. `app.demo` accepts the same sender
+arguments but always connects to an already-running Server B.
 
 In ECDHE mode, the peers exchange their X25519 public keys as ten alternating
 LLM-generated cover-text messages: each side splits its key into five
@@ -264,8 +256,8 @@ previously shared secret on both servers if the key-carrier positions need to
 be confidential. X25519 public-key authentication against an active
 man-in-the-middle is not provided by this demo.
 
-Set the optional bootstrap secret in both PowerShell terminals before starting
-the receiver and sender:
+Set the optional bootstrap secret in both terminals for separate processes, or
+once in the environment for the coordinated demo:
 
 ```powershell
 $env:LLM_SHIELD_PREVIOUS_SHARED_SECRET = "your previously shared secret"

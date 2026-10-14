@@ -1,4 +1,4 @@
-"""Main research prototype demo for PSK and ECDHE modes.
+﻿"""Main research prototype demo for PSK and ECDHE modes.
 
 Both modes use the same covert pipeline:
 
@@ -22,6 +22,7 @@ import hashlib
 import logging
 import time
 from dataclasses import dataclass
+from threading import Event, Thread
 from typing import Sequence
 
 from app.crypto.aead import decrypt, encrypt
@@ -607,41 +608,139 @@ def _prompt_for_mode() -> str:
         print("Please choose 1 (PSK) or 2 (ECDHE).")
 
 
-def main() -> None:
+def _run_coordinated_tcp_demo(
+    *,
+    mode: str,
+    host: str,
+    port: int,
+    topic: str,
+    secret: str,
+    password: str | None,
+) -> None:
+    """Run both TCP endpoints in this process with one shared LLM instance."""
+
+    from app.llm.embedder import EmbedderLLM
+    from app.llm.generator import LLMGenerator
+    from server_a import send_message
+    from server_b import receive_message
+
+    generator = LLMGenerator()
+    embedder = EmbedderLLM(
+        llm_generator=generator,
+        character_map=CharacterMap(),
+    )
+    listener_ready = Event()
+    stop_listener = Event()
+    bound_address: list[tuple[str, int]] = []
+    receiver_errors: list[Exception] = []
+
+    def receive_once() -> None:
+        try:
+            receive_message(
+                host,
+                port,
+                password=password,
+                llm_generator=generator,
+                key_embedder=embedder,
+                demonstration=True,
+                listener_ready=listener_ready,
+                stop_event=stop_listener,
+                bound_address=bound_address,
+            )
+        except Exception as error:
+            receiver_errors.append(error)
+        finally:
+            listener_ready.set()
+
+    receiver = Thread(target=receive_once, name="llm-shield-server-b", daemon=True)
+    receiver.start()
+    if not listener_ready.wait(timeout=15):
+        stop_listener.set()
+        receiver.join(timeout=2)
+        raise TimeoutError("Server B did not become ready within 15 seconds")
+    if receiver_errors:
+        raise RuntimeError("Server B failed during startup") from receiver_errors[0]
+    if not bound_address:
+        raise RuntimeError("Server B did not report its listening address")
+
+    connect_host, actual_port = bound_address[0]
+    if connect_host in {"0.0.0.0", "::"}:
+        connect_host = "127.0.0.1"
+    try:
+        send_message(
+            connect_host,
+            actual_port,
+            secret,
+            topic,
+            mode=mode,
+            password=password,
+            llm_generator=generator,
+            key_embedder=embedder,
+            demonstration=True,
+        )
+    except Exception:
+        stop_listener.set()
+        receiver.join(timeout=2)
+        raise
+
+    receiver.join()
+    if receiver_errors:
+        raise RuntimeError(
+            "Server B failed while processing the message"
+        ) from receiver_errors[0]
+
+
+def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="LLM-SHIELD main prototype demo")
     parser.add_argument("--mode", choices=["psk", "ecdhe"], help="Run in PSK or ECDHE mode")
     parser.add_argument("--topic", default="", help="Story topic for generation")
-    parser.add_argument("--secret", default="", help="Secret message to hide")
-    parser.add_argument("--password", default="", help="Password for PSK mode")
+    parser.add_argument(
+        "--secret",
+        "--message",
+        dest="secret",
+        default="",
+        help="Secret message to hide",
+    )
     parser.add_argument("--host", default="127.0.0.1", help="Server B address")
-    parser.add_argument("--port", type=int, default=50505, help="Server B TCP port")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=50505,
+        help="Server B TCP port",
+    )
+    args = parser.parse_args(argv)
 
-    if args.mode is None:
-        mode = _prompt_for_mode()
-    else:
-        mode = args.mode
+    mode = args.mode or _prompt_for_mode()
+    topic = args.topic.strip()
+    while not topic:
+        topic = input("Enter topic: ").strip()
+        if not topic:
+            print("Topic cannot be empty.")
 
-    while True:
-        topic = args.topic.strip() if args.topic else input("Enter topic: ").strip()
-        if topic:
-            break
-        print("Topic cannot be empty.")
-
-    secret = args.secret.strip()
+    secret = args.secret
+    if not secret:
+        secret = input("Enter secret message: ")
+    if not secret:
+        raise ValueError("Secret message must not be empty.")
 
     if mode == "psk":
-        password = args.password if args.password else getpass.getpass("Enter password: ")
-        from server_a import send_message
-
-        send_message(
-            args.host, args.port, secret, topic, mode="psk", password=password
-        )
+        password = getpass.getpass("Enter password: ")
+        if not password:
+            raise ValueError("PSK password must not be empty.")
     else:
-        from server_a import send_message
+        password = None
 
-        send_message(args.host, args.port, secret, topic, mode="ecdhe")
+    from server_a import send_message
 
+    send_message(
+        args.host,
+        args.port,
+        secret,
+        topic,
+        mode=mode,
+        password=password,
+        demonstration=True,
+    )
 
 if __name__ == "__main__":
     main()

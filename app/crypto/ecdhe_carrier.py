@@ -5,7 +5,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
+
 
 from app.crypto.key_derivation import derive_keys
 from app.crypto.mapping import CharacterMap
@@ -84,6 +85,8 @@ def embed_public_key_segment(
     topic: str,
     position_key: bytes,
     embedder: EmbedderLLM | None = None,
+    verbose: bool = False,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> dict[str, object]:
     """Map and embed one public-key segment, returning its carrier frame fields."""
 
@@ -130,7 +133,8 @@ def embed_public_key_segment(
         max_attempts=15000,
         max_retries=3,
         allow_adaptive_positions=False,
-        verbose=False,
+        verbose=verbose,
+        progress_callback=progress_callback,
     )
     actual_positions = result.positions
     if (
