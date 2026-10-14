@@ -791,11 +791,12 @@ class EmbedderLLM:
         if token_limit <= 0:
             raise ValueError("max_tokens must be > 0")
 
-        print(
-            f"Completing carrier-text ending (one generation, "
-            f"up to {token_limit} tokens)...",
-            flush=True,
-        )
+        if getattr(self, "_verbose", True):
+            print(
+                f"Completing carrier-text ending (one generation, "
+                f"up to {token_limit} tokens)...",
+                flush=True,
+            )
         continuation = self.llm_generator.generate(
             prompt=self._model_prompt(topic, story),
             temperature=0.75,
@@ -1495,10 +1496,11 @@ class EmbedderLLM:
             ):
                 retry_number = ((retry_round - 1) * len(retry_schedule)) + schedule_number
                 self._embedding_stats["retries"] += 1
-                print(
-                    f"Retry {retry_number}: T={retry_temperature:.2f} "
-                    f"k={retry_top_k}"
-                )
+                if getattr(self, "_verbose", True):
+                    print(
+                        f"Retry {retry_number}: T={retry_temperature:.2f} "
+                        f"k={retry_top_k}"
+                    )
 
                 story = original_story
                 retry_topic = topic + retry_instructions[(retry_round - 1) % len(retry_instructions)]
@@ -1525,15 +1527,16 @@ class EmbedderLLM:
                             character,
                         )
                     ):
-                        print("Status: Embedded successfully")
-                        elapsed = time.perf_counter() - character_started
-                        print(
-                            "Character stats: "
-                            f"LLM calls={self._embedding_stats['llm_calls'] - character_stats_start['llm_calls']}, "
-                            f"candidate evaluations={self._embedding_stats['candidate_evaluations'] - character_stats_start['candidate_evaluations']}, "
-                            f"retries={self._embedding_stats['retries'] - character_stats_start['retries']}, "
-                            f"time={elapsed:.2f}s"
-                        )
+                        if getattr(self, "_verbose", True):
+                            print("Status: Embedded successfully")
+                            elapsed = time.perf_counter() - character_started
+                            print(
+                                "Character stats: "
+                                f"LLM calls={self._embedding_stats['llm_calls'] - character_stats_start['llm_calls']}, "
+                                f"candidate evaluations={self._embedding_stats['candidate_evaluations'] - character_stats_start['candidate_evaluations']}, "
+                                f"retries={self._embedding_stats['retries'] - character_stats_start['retries']}, "
+                                f"time={elapsed:.2f}s"
+                            )
                         return result
 
                 last_failure_reason = getattr(
@@ -1541,17 +1544,19 @@ class EmbedderLLM:
                     "_last_failure_reason",
                     "candidate rejected or generation did not reach the position",
                 )
-                print(f"Candidate rejected: {last_failure_reason}")
-                print("Retrying same character and position...")
+                if getattr(self, "_verbose", True):
+                    print(f"Candidate rejected: {last_failure_reason}")
+                    print("Retrying same character and position...")
 
-        elapsed = time.perf_counter() - character_started
-        print(
-            "Character stats: "
-            f"LLM calls={self._embedding_stats['llm_calls'] - character_stats_start['llm_calls']}, "
-            f"candidate evaluations={self._embedding_stats['candidate_evaluations'] - character_stats_start['candidate_evaluations']}, "
-            f"retries={self._embedding_stats['retries'] - character_stats_start['retries']}, "
-            f"time={elapsed:.2f}s"
-        )
+        if getattr(self, "_verbose", True):
+            elapsed = time.perf_counter() - character_started
+            print(
+                "Character stats: "
+                f"LLM calls={self._embedding_stats['llm_calls'] - character_stats_start['llm_calls']}, "
+                f"candidate evaluations={self._embedding_stats['candidate_evaluations'] - character_stats_start['candidate_evaluations']}, "
+                f"retries={self._embedding_stats['retries'] - character_stats_start['retries']}, "
+                f"time={elapsed:.2f}s"
+            )
         raise RuntimeError(
             f"Unable to embed character '{character}' at position {position} "
             f"after {max_retries} retry rounds and all retry configurations. "
@@ -1575,8 +1580,10 @@ class EmbedderLLM:
         max_retries: int = DEFAULT_RETRIES,
         deterministic: bool = False,
         allow_adaptive_positions: bool = False,
+        verbose: bool = True,
     ) -> EmbeddingResult:
 
+        self._verbose = verbose
         self._validate_inputs(
             topic=topic,
             characters=characters,
@@ -1651,11 +1658,12 @@ class EmbedderLLM:
             )
         ):
 
-            display_char = "SPACE" if character == " " else character
-            print("--------------------------------------------------")
-            print(f"Embedding {index + 1}/{len(characters)}")
-            print(f"Character: {display_char}")
-            print(f"Position: {position}")
+            if verbose:
+                display_char = "SPACE" if character == " " else character
+                print("--------------------------------------------------")
+                print(f"Embedding {index + 1}/{len(characters)}")
+                print(f"Character: {display_char}")
+                print(f"Position: {position}")
 
             # The current story must never already be beyond target.
             if len(story) > position:
@@ -1712,10 +1720,11 @@ class EmbedderLLM:
                 for following in range(index + 1, len(positions)):
                     positions[following] += delta
                 position = adaptive_position
-                print(
-                    f"Adaptive placement: using natural character at position "
-                    f"{adaptive_position}; shifted following positions by {delta}"
-                )
+                if verbose:
+                    print(
+                        f"Adaptive placement: using natural character at position "
+                        f"{adaptive_position}; shifted following positions by {delta}"
+                    )
             total_attempt_counter[0] += character_attempt_counter[0]
 
             # Immediate verification.

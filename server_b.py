@@ -5,49 +5,38 @@ from __future__ import annotations
 import argparse
 import getpass
 import hmac
+import os
 import socket
-import time
 from collections.abc import Sequence
 
 from app.crypto.aead import decrypt
 from app.crypto.aead_mapping import character_sequence_to_aead
 from app.crypto.ecdhe import derive_ecdhe_keys, derive_shared_secret, generate_key_pair
+from app.crypto.ecdhe_carrier import (
+    PUBLIC_KEY_EXCHANGE_MESSAGE_COUNT,
+    assemble_public_key,
+    derive_carrier_position_keys,
+    embed_public_key_segment,
+    extract_public_key_segment,
+    split_public_key,
+)
 from app.crypto.key_derivation import derive_keys
+from app.crypto.mapping import CharacterMap
 from app.extraction.extractor import Extractor
 from app.tcp_protocol import (
-    decode_hex_field,
     authenticate_positions,
+    decode_hex_field,
     key_confirmation,
     payload_associated_data,
-    positions_for_payload,
     receive_json,
     send_json,
 )
 
 
-def _print_key_derivation(salt: bytes, dk1: bytes, dk2: bytes) -> None:
-    valid = len(dk1) == 32 and len(dk2) == 32
-    print("\n[3] PBKDF2 KEY DERIVATION")
-    print("Algorithm              : PBKDF2-HMAC-SHA256")
-    print(f"Salt                   : {salt.hex()}")
-    print("Output                 : 512 bits / 64 bytes")
-    print(f"DK1                    : {dk1.hex()}")
-    print(f"DK1 length             : {len(dk1)} bytes / {len(dk1) * 8} bits")
-    print(f"DK2                    : {dk2.hex()}")
-    print(f"DK2 length             : {len(dk2)} bytes / {len(dk2) * 8} bits")
-    print(f"PBKDF2 derivation      : {'PASS' if valid else 'FAIL'}")
-    if not valid:
-        raise RuntimeError("PBKDF2 must produce two 32-byte keys")
-
-
 def receive_message(host: str, port: int) -> None:
     """Accept one sender and display its extraction/decryption pipeline."""
 
-    started = time.perf_counter()
-    print("=" * 78)
-    print("LLM-SHIELD | SERVER B | RECEIVER")
-    print("=" * 78)
-    print(f"Listening on {host}:{port} ...")
+    print(f"Server B listening on {host}:{port}")
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -56,7 +45,6 @@ def receive_message(host: str, port: int) -> None:
         connection, peer_address = listener.accept()
 
     with connection:
-        print(f"TCP connection accepted from {peer_address}")
         hello = receive_json(connection)
         if hello.get("type") != "hello":
             raise ValueError("expected session hello from Server A")
@@ -67,28 +55,53 @@ def receive_message(host: str, port: int) -> None:
         if not isinstance(topic, str) or not topic.strip():
             raise ValueError("session topic must be a non-empty string")
 
-        print("\n[1] INPUT")
-        print(f"Mode           : {mode.upper()}")
-        print(f"Topic          : {topic}")
-        print("Secret message : encrypted; unavailable until AES-GCM verification")
-
-        print("\n[2] KEY ESTABLISHMENT")
         if mode == "ecdhe":
             private_key, public_key = generate_key_pair()
-            peer_message = receive_json(connection)
-            if peer_message.get("type") != "public_key":
-                raise ValueError("expected Server A public-key message")
-            peer_public_key = decode_hex_field(peer_message, "public_key", 32)
-            print(f"Server A public key    : {peer_public_key.hex()}")
-            print(f"Server B public key    : {public_key.hex()}")
-            send_json(
-                connection,
-                {"type": "public_key", "public_key": public_key.hex()},
-            )
-            print("TCP public-key exchange: PASS")
+            from app.llm.embedder import EmbedderLLM
+            from app.llm.generator import LLMGenerator
 
+            llm_generator = LLMGenerator()
+            key_embedder = EmbedderLLM(
+                llm_generator=llm_generator,
+                character_map=CharacterMap(),
+            )
+            session_id = decode_hex_field(hello, "session_id", 16)
+            carrier_dk1, carrier_dk2 = derive_carrier_position_keys(
+                os.environ.get("LLM_SHIELD_PREVIOUS_SHARED_SECRET", ""),
+                session_id,
+            )
+            own_segments = split_public_key(public_key)
+            peer_segments: list[bytes] = []
+            for segment_index, own_segment in enumerate(own_segments):
+                peer_frame = receive_json(connection)
+                peer_segment = extract_public_key_segment(
+                    peer_frame,
+                    expected_role="server_a",
+                    expected_segment_index=segment_index,
+                    position_key=carrier_dk1,
+                )
+                peer_segments.append(peer_segment)
+                print(
+                    f"Carrier {segment_index * 2 + 1}/"
+                    f"{PUBLIC_KEY_EXCHANGE_MESSAGE_COUNT} received (Server A)"
+                )
+
+                own_frame = embed_public_key_segment(
+                    own_segment,
+                    role="server_b",
+                    segment_index=segment_index,
+                    topic=topic,
+                    position_key=carrier_dk2,
+                    embedder=key_embedder,
+                )
+                send_json(connection, own_frame)
+                print(
+                    f"Carrier {segment_index * 2 + 2}/"
+                    f"{PUBLIC_KEY_EXCHANGE_MESSAGE_COUNT} sent (Server B)"
+                )
+
+            peer_public_key = assemble_public_key(peer_segments)
             shared_secret = derive_shared_secret(private_key, peer_public_key)
-            print(f"Server B shared secret : {shared_secret.hex()}")
             peer_confirmation = receive_json(connection)
             peer_mac = peer_confirmation.get("mac")
             expected_a_confirmation = key_confirmation(
@@ -112,9 +125,11 @@ def receive_message(host: str, port: int) -> None:
                     ),
                 },
             )
-            print("Shared secrets match   : PASS")
+            print(
+                f"ECDHE key exchange complete "
+                f"({PUBLIC_KEY_EXCHANGE_MESSAGE_COUNT} alternating carriers)"
+            )
         else:
-            print("Method                 : Password-based key establishment")
             password = getpass.getpass("Enter shared PSK password: ")
             if not password:
                 raise ValueError("PSK password must not be empty")
@@ -124,13 +139,10 @@ def receive_message(host: str, port: int) -> None:
         if salt_message.get("type") != "kdf_salt":
             raise ValueError("expected PBKDF2 salt from Server A")
         salt = decode_hex_field(salt_message, "salt", 16)
-        if mode == "psk":
-            print(f"PBKDF2 salt             : {salt.hex()}")
         if mode == "ecdhe":
             dk1, dk2 = derive_ecdhe_keys(shared_secret, salt)
         else:
             dk1, dk2 = derive_keys(password, salt)
-        _print_key_derivation(salt, dk1, dk2)
         send_json(connection, {"type": "kdf_ready"})
 
         payload = receive_json(connection)
@@ -144,18 +156,9 @@ def receive_message(host: str, port: int) -> None:
         cover_text = payload.get("cover_text")
         if not isinstance(cover_text, str) or not cover_text:
             raise ValueError("cover text must be a non-empty string")
-        embedding_attempts = payload.get("embedding_attempts")
-
-        print("\n[4] AES-256-GCM / AEAD ENCRYPTION")
-        print("Ciphertext and authentication tag remain hidden in the cover payload.")
-        print("\n[5] PAYLOAD MAPPING")
-        print("AEAD payload            : authentication tag || ciphertext")
-        print(f"Mapped payload length   : {mapped_length} h4 characters")
-
         supplied_positions = payload.get("target_positions")
         positions_mac = payload.get("positions_mac")
 
-        base_positions = positions_for_payload(dk2, mapped_length)
         if (
             not isinstance(supplied_positions, list)
             or len(supplied_positions) != mapped_length
@@ -178,53 +181,22 @@ def receive_message(host: str, port: int) -> None:
             len(positions) == mapped_length
             and all(left < right for left, right in zip(positions, positions[1:]))
         )
-        print("\n[6] SHAKE-128 POSITION GENERATION")
-        print("Position key             : DK2")
-        print("SHAKE-128                : ACTIVE")
-        print(f"Number of target positions: {len(positions)}")
-        print(f"SHAKE-128 base sequence  : {base_positions}")
-        print(f"Authenticated target sequence: {positions}")
-        print(
-            "Positions strictly increasing: "
-            f"{'PASS' if positions_valid else 'FAIL'}"
-        )
-        print(f"Position generation      : {'PASS' if positions_valid else 'FAIL'}")
         if not positions_valid:
             raise RuntimeError("regenerated SHAKE-128 positions are invalid")
 
-        print("\n[7] EMBEDDERLLM / QWEN")
-        print("LLM model                : generated by Server A")
-        print(f"Embedding payload length : {mapped_length} characters")
-        print(f"Embedding attempts       : {embedding_attempts}")
-        print("Embedding status         : cover received from Server A")
-        print("\nReceived carrier text:")
-        print(cover_text)
-
-        print("\n[8] EXTRACTION")
-        print("Regenerated target positions:")
-        print(positions)
         extracted = Extractor().extract(
             cover_text=cover_text,
             positions=positions,
         ).upper()
         if len(extracted) != mapped_length:
             raise ValueError("cover text did not contain all embedded characters")
-        print(f"Extracted mapped chars   : {extracted}")
-        print("Extraction               : PASS")
 
-        print("\n[9] INVERSE MAPPING")
         recovered_enc = character_sequence_to_aead(extracted)
         if len(recovered_enc) != mapped_length // 2:
             raise ValueError("inverse-mapped AEAD payload length is inconsistent")
-        print(f"Extracted mapped payload: {extracted}")
-        print(f"Recovered hexadecimal   : {recovered_enc.hex()}")
-        print("Inverse mapping         : PASS")
 
         recovered_tag = recovered_enc[:16]
         ciphertext = recovered_enc[16:]
-        print("\n[10] AEAD DECRYPTION")
-        print(f"Ciphertext               : {ciphertext.hex()}")
-        print(f"Authentication tag       : {recovered_tag.hex()}")
         recovered_plaintext = decrypt(
             ciphertext=ciphertext,
             tag=recovered_tag,
@@ -233,16 +205,7 @@ def receive_message(host: str, port: int) -> None:
             associated_data=associated_data,
         )
         recovered_message = recovered_plaintext.decode("utf-8")
-        print("AES-256-GCM verification : PASS")
-        print("Authentication status    : PASS")
-        print(f"Recovered plaintext      : {recovered_message}")
-
-        print("\n[11] END-TO-END VERIFICATION")
-        print("Original message         : hidden from receiver until decrypted")
-        print(f"Recovered message        : {recovered_message}")
-        print("Message match            : PASS (AEAD authenticated)")
-        print("Overall result           : PASS")
-        print(f"Elapsed                  : {time.perf_counter() - started:.2f} seconds")
+        print(f"Received and authenticated message: {recovered_message}")
 
 
 def main(argv: Sequence[str] | None = None) -> None:

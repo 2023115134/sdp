@@ -12,19 +12,19 @@ PasswordLike = Union[str, bytes, bytearray]
 SaltLike = Union[str, bytes, bytearray]
 
 
-def _normalize_password(password: PasswordLike) -> bytes:
-    """Convert a non-empty password to bytes."""
+def _normalize_password(password: PasswordLike, allow_empty: bool = False) -> bytes:
+    """Convert a password to bytes, optionally permitting an empty value."""
 
     if password is None:
         raise TypeError("password must be str, bytes, or bytearray")
 
     if isinstance(password, str):
-        if not password:
+        if not password and not allow_empty:
             raise ValueError("password must not be empty")
         return password.encode("utf-8")
 
     if isinstance(password, (bytes, bytearray)):
-        if not password:
+        if not password and not allow_empty:
             raise ValueError("password must not be empty")
         return bytes(password)
 
@@ -59,10 +59,18 @@ def generate_salt(length: int = DEFAULT_PBKDF2_CONFIG.salt_length) -> bytes:
     return os.urandom(length)
 
 
-def derive_keys(password: PasswordLike, salt: SaltLike) -> tuple[bytes, bytes]:
+def derive_keys(
+    password: PasswordLike,
+    salt: SaltLike,
+    *,
+    allow_empty_password: bool = False,
+) -> tuple[bytes, bytes]:
     """Derive 64 bytes with PBKDF2-HMAC-SHA256 and split them into two keys."""
 
-    normalized_password = _normalize_password(password)
+    normalized_password = _normalize_password(
+        password,
+        allow_empty=allow_empty_password,
+    )
     normalized_salt = _normalize_salt(salt)
 
     iterations = get_pbkdf2_iterations()

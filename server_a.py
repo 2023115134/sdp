@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 import getpass
 import hmac
+import os
 import socket
-import time
 from collections.abc import Sequence
 
 from app.crypto.aead import decrypt, encrypt
@@ -15,6 +15,14 @@ from app.crypto.aead_mapping import (
     character_sequence_to_aead,
 )
 from app.crypto.ecdhe import derive_ecdhe_keys, derive_shared_secret, generate_key_pair
+from app.crypto.ecdhe_carrier import (
+    PUBLIC_KEY_EXCHANGE_MESSAGE_COUNT,
+    assemble_public_key,
+    derive_carrier_position_keys,
+    embed_public_key_segment,
+    extract_public_key_segment,
+    split_public_key,
+)
 from app.crypto.key_derivation import derive_keys, generate_salt
 from app.crypto.mapping import CharacterMap
 from app.tcp_protocol import (
@@ -61,21 +69,6 @@ def _safe_initial_story(topic: str, first_position: int) -> str:
     return story
 
 
-def _print_key_derivation(salt: bytes, dk1: bytes, dk2: bytes) -> None:
-    valid = len(dk1) == 32 and len(dk2) == 32
-    print("\n[3] PBKDF2 KEY DERIVATION")
-    print("Algorithm              : PBKDF2-HMAC-SHA256")
-    print(f"Salt                   : {salt.hex()}")
-    print("Output                 : 512 bits / 64 bytes")
-    print(f"DK1                    : {dk1.hex()}")
-    print(f"DK1 length             : {len(dk1)} bytes / {len(dk1) * 8} bits")
-    print(f"DK2                    : {dk2.hex()}")
-    print(f"DK2 length             : {len(dk2)} bytes / {len(dk2) * 8} bits")
-    print(f"PBKDF2 derivation      : {'PASS' if valid else 'FAIL'}")
-    if not valid:
-        raise RuntimeError("PBKDF2 must produce two 32-byte keys")
-
-
 def send_message(
     host: str,
     port: int,
@@ -89,57 +82,89 @@ def send_message(
     mode = mode.lower()
     if mode not in {"psk", "ecdhe"}:
         raise ValueError("mode must be 'psk' or 'ecdhe'")
-    if not message:
-        raise ValueError("message must not be empty")
+    if not isinstance(message, str):
+        raise TypeError("message must be a string")
     if not topic.strip():
         raise ValueError("topic must not be empty")
     if mode == "psk" and not password:
         raise ValueError("PSK mode requires a non-empty password")
 
-    started = time.perf_counter()
-    print("=" * 78)
-    print(f"LLM-SHIELD | SERVER A | {mode.upper()}")
-    print("=" * 78)
-    print("\n[1] INPUT")
-    print(f"Mode           : {mode.upper()}")
-    print(f"Topic          : {topic}")
-    print(f"Secret message : {message}")
+    print(f"Server A starting {mode.upper()} session with {host}:{port}")
 
     private_key: bytes | None = None
     public_key: bytes | None = None
+    llm_generator = None
+    key_embedder = None
     if mode == "ecdhe":
         private_key, public_key = generate_key_pair()
+        from app.llm.embedder import EmbedderLLM
+        from app.llm.generator import LLMGenerator
 
-    print("\n[2] KEY ESTABLISHMENT")
-    if mode == "psk":
-        print("Method                 : Password-based key establishment")
-    else:
-        assert public_key is not None
-        print(f"Server A public key    : {public_key.hex()}")
+        llm_generator = LLMGenerator()
+        key_embedder = EmbedderLLM(
+            llm_generator=llm_generator,
+            character_map=CharacterMap(),
+        )
 
-    print(f"\nConnecting to Server B at {host}:{port} ...")
     with socket.create_connection((host, port), timeout=15) as connection:
         connection.settimeout(None)
-        send_json(
-            connection,
-            {"type": "hello", "mode": mode, "topic": topic},
-        )
+        session_id: bytes | None = None
+        carrier_dk1: bytes | None = None
+        carrier_dk2: bytes | None = None
+        hello_message: dict[str, object] = {
+            "type": "hello",
+            "mode": mode,
+            "topic": topic,
+        }
+        if mode == "ecdhe":
+            session_id = os.urandom(16)
+            carrier_dk1, carrier_dk2 = derive_carrier_position_keys(
+                os.environ.get("LLM_SHIELD_PREVIOUS_SHARED_SECRET", ""),
+                session_id,
+            )
+            hello_message["session_id"] = session_id.hex()
+        send_json(connection, hello_message)
 
         if mode == "ecdhe":
             assert private_key is not None and public_key is not None
-            send_json(
-                connection,
-                {"type": "public_key", "public_key": public_key.hex()},
+            assert carrier_dk1 is not None and carrier_dk2 is not None
+            own_segments = split_public_key(public_key)
+            peer_segments: list[bytes] = []
+            for segment_index, own_segment in enumerate(own_segments):
+                own_frame = embed_public_key_segment(
+                    own_segment,
+                    role="server_a",
+                    segment_index=segment_index,
+                    topic=topic,
+                    position_key=carrier_dk1,
+                    embedder=key_embedder,
+                )
+                send_json(connection, own_frame)
+                print(
+                    f"Carrier {segment_index * 2 + 1}/"
+                    f"{PUBLIC_KEY_EXCHANGE_MESSAGE_COUNT} sent (Server A)"
+                )
+
+                peer_frame = receive_json(connection)
+                peer_segment = extract_public_key_segment(
+                    peer_frame,
+                    expected_role="server_b",
+                    expected_segment_index=segment_index,
+                    position_key=carrier_dk2,
+                )
+                peer_segments.append(peer_segment)
+                print(
+                    f"Carrier {segment_index * 2 + 2}/"
+                    f"{PUBLIC_KEY_EXCHANGE_MESSAGE_COUNT} received (Server B)"
+                )
+
+            peer_public_key = assemble_public_key(peer_segments)
+            print(
+                f"ECDHE key exchange complete "
+                f"({PUBLIC_KEY_EXCHANGE_MESSAGE_COUNT} alternating carriers)"
             )
-            peer_message = receive_json(connection)
-            if peer_message.get("type") != "public_key":
-                raise ValueError("expected Server B public-key message")
-            peer_public_key = decode_hex_field(peer_message, "public_key", 32)
-            print(f"Server B public key    : {peer_public_key.hex()}")
-            print("TCP public-key exchange: PASS")
 
             shared_secret = derive_shared_secret(private_key, peer_public_key)
-            print(f"Server A shared secret : {shared_secret.hex()}")
             own_confirmation = key_confirmation(
                 shared_secret, "server_a", public_key, peer_public_key
             )
@@ -163,24 +188,22 @@ def send_message(
                 or not hmac.compare_digest(peer_mac, expected_confirmation)
             ):
                 raise ValueError("Server B key confirmation failed")
-            print("Shared secrets match   : PASS")
         else:
             shared_secret = b""
 
         salt = generate_salt()
         send_json(connection, {"type": "kdf_salt", "salt": salt.hex()})
-        if mode == "psk":
-            print(f"PBKDF2 salt             : {salt.hex()}")
         if mode == "ecdhe":
             dk1, dk2 = derive_ecdhe_keys(shared_secret, salt)
         else:
             assert password is not None
             dk1, dk2 = derive_keys(password, salt)
-        _print_key_derivation(salt, dk1, dk2)
-
         ready_message = receive_json(connection)
         if ready_message.get("type") != "kdf_ready":
             raise ValueError("Server B did not confirm key derivation")
+
+        if not message.strip():
+            message = _prompt_nonempty("Enter secret message: ")
 
         plaintext = message.encode("utf-8")
         mapped_length = 2 * (len(plaintext) + 16)
@@ -196,26 +219,11 @@ def send_message(
             and encrypted["enc"] == encrypted["tag"] + encrypted["ciphertext"]
         )
 
-        print("\n[4] AES-256-GCM / AEAD ENCRYPTION")
-        print(f"Plaintext                : {message}")
-        print(f"AAD (hex)                : {associated_data.hex()}")
-        print(f"Nonce                    : {encrypted['nonce'].hex()}")
-        print(f"Ciphertext               : {encrypted['ciphertext'].hex()}")
-        print(f"Ciphertext length        : {len(encrypted['ciphertext'])} bytes")
-        print(f"Authentication tag       : {encrypted['tag'].hex()}")
-        print(f"Authentication tag length: {len(encrypted['tag'])} bytes")
-        print(f"AEAD encryption          : {'PASS' if encryption_valid else 'FAIL'}")
         if not encryption_valid:
             raise RuntimeError("AES-256-GCM encryption output is invalid")
 
         mapped_payload = aead_to_character_sequence(encrypted["enc"])
         mapping_valid = len(mapped_payload) == mapped_length
-        print("\n[5] PAYLOAD MAPPING")
-        print("Original AEAD payload    : Authentication tag || ciphertext")
-        print(f"Hexadecimal payload      : {encrypted['enc'].hex()}")
-        print(f"Mapped payload           : {mapped_payload}")
-        print(f"Mapped payload length    : {len(mapped_payload)} characters")
-        print(f"Mapping                  : {'PASS' if mapping_valid else 'FAIL'}")
         if not mapping_valid:
             raise RuntimeError("AEAD payload mapping produced an invalid length")
 
@@ -224,16 +232,6 @@ def send_message(
             len(positions) == len(mapped_payload)
             and all(left < right for left, right in zip(positions, positions[1:]))
         )
-        print("\n[6] SHAKE-128 POSITION GENERATION")
-        print("Position key             : DK2")
-        print("SHAKE-128                : ACTIVE")
-        print(f"Number of target positions: {len(positions)}")
-        print(f"Complete target sequence : {positions}")
-        print(
-            "Positions strictly increasing: "
-            f"{'PASS' if positions_valid else 'FAIL'}"
-        )
-        print(f"Position generation      : {'PASS' if positions_valid else 'FAIL'}")
         if not positions_valid:
             raise RuntimeError("SHAKE-128 target positions are invalid")
 
@@ -242,16 +240,14 @@ def send_message(
         from app.llm.generator import LLMGenerator
 
         character_map = CharacterMap()
-        generator = LLMGenerator()
-        embedder = EmbedderLLM(
-            llm_generator=generator,
-            character_map=character_map,
-        )
-        print("\n[7] EMBEDDERLLM / QWEN")
-        print(f"LLM model                : {generator.model_name}")
-        print(f"Embedding payload length : {len(mapped_payload)} characters")
-        print("Embedding progress       : EmbedderLLM reports each character and target")
-        expected_positions = positions.copy()
+        if llm_generator is None:
+            llm_generator = LLMGenerator()
+        if key_embedder is None:
+            key_embedder = EmbedderLLM(
+                llm_generator=llm_generator,
+                character_map=character_map,
+            )
+        embedder = key_embedder
         result = embedder.embed(
             topic=topic,
             characters=mapped_payload,
@@ -263,6 +259,7 @@ def send_message(
             max_attempts=15000,
             max_retries=3,
             allow_adaptive_positions=True,
+            verbose=False,
         )
         actual_positions = result.positions
         if not EmbedderLLM.verify_embedding(
@@ -280,38 +277,21 @@ def send_message(
             )
         ):
             raise RuntimeError("adaptive target positions are invalid")
-        print(f"Embedding attempts        : {result.attempts}")
-        print(f"Embedding status          : PASS ({len(mapped_payload)} characters)")
-        print("\nGenerated carrier text:")
-        print(result.story)
-
         extracted = Extractor(character_map=character_map).extract(
             cover_text=result.story,
             positions=actual_positions,
         ).upper()
-        print("\n[8] EXTRACTION")
-        print("Received carrier text    : (locally generated; transmitted to Server B)")
-        print(f"Regenerated positions    : {positions}")
-        print(f"Extracted mapped chars   : {extracted}")
         extraction_valid = extracted == mapped_payload
-        print(f"Extraction               : {'PASS' if extraction_valid else 'FAIL'}")
         if not extraction_valid:
             raise RuntimeError("local extraction failed")
 
         recovered_enc = character_sequence_to_aead(extracted)
         inverse_valid = recovered_enc == encrypted["enc"]
-        print("\n[9] INVERSE MAPPING")
-        print(f"Extracted mapped payload : {extracted}")
-        print(f"Recovered hexadecimal    : {recovered_enc.hex()}")
-        print(f"Inverse mapping          : {'PASS' if inverse_valid else 'FAIL'}")
         if not inverse_valid:
             raise RuntimeError("inverse payload mapping failed")
 
         recovered_tag = recovered_enc[:16]
         recovered_ciphertext = recovered_enc[16:]
-        print("\n[10] AEAD DECRYPTION")
-        print(f"Ciphertext               : {recovered_ciphertext.hex()}")
-        print(f"Authentication tag       : {recovered_tag.hex()}")
         recovered_plaintext = decrypt(
             ciphertext=recovered_ciphertext,
             tag=recovered_tag,
@@ -320,16 +300,10 @@ def send_message(
             associated_data=associated_data,
         )
         authentication_valid = recovered_plaintext == plaintext
-        print("AES-256-GCM verification : PASS")
-        print(f"Authentication status    : {'PASS' if authentication_valid else 'FAIL'}")
-        print(f"Recovered plaintext      : {recovered_plaintext.decode('utf-8')}")
         if not authentication_valid:
             raise RuntimeError("AES-256-GCM did not recover the original plaintext")
 
         position_authentication = authenticate_positions(dk2, actual_positions)
-        if actual_positions != expected_positions:
-            print("Adaptive target positions: authenticated SHAKE-128-derived schedule")
-            print(f"Actual target sequence   : {actual_positions}")
 
         send_json(
             connection,
@@ -344,14 +318,10 @@ def send_message(
                 "embedding_attempts": result.attempts,
             },
         )
-        print("Carrier transmitted      : PASS (cover text delivered to Server B)")
-
-    print("\n[11] END-TO-END VERIFICATION")
-    print(f"Original message         : {message}")
-    print(f"Recovered message        : {recovered_plaintext.decode('utf-8')}")
-    print(f"Message match            : {'PASS' if authentication_valid else 'FAIL'}")
-    print("Overall result           : PASS")
-    print(f"Elapsed                  : {time.perf_counter() - started:.2f} seconds")
+    print(
+        f"{mode.upper()} message sent and locally verified "
+        f"({len(mapped_payload)} mapped characters)."
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -365,7 +335,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     mode = args.mode or _prompt_for_mode()
     topic = args.topic.strip() or _prompt_nonempty("Enter topic: ")
-    message = args.message.strip() or _prompt_nonempty("Enter secret message: ")
+    message = args.message.strip()
     password = getpass.getpass("Enter PSK password: ") if mode == "psk" else None
 
     send_message(

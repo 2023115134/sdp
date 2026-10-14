@@ -243,20 +243,49 @@ For PSK, use the same command with `--mode psk`:
 Server B listens on `127.0.0.1:50505` by default. In PSK mode, enter the same
 password at both terminals when prompted. To use the interactive mode picker,
 run `.\.venv\Scripts\python.exe server_a.py` or
-`.\.venv\Scripts\python.exe -m app.demo`; choose mode first and then enter the
-topic and message.
+`.\.venv\Scripts\python.exe -m app.demo`; choose mode and enter the topic.
+If `--message` / `--secret` is omitted, the sender asks for the secret only
+after key establishment completes.
 
-In ECDHE mode, Server A and Server B exchange their X25519 public keys over
-TCP and independently derive and confirm the raw shared secret. The keys are
-separate handshake messages and are not embedded in the secret-message
-payload. Both modes then share a PBKDF2 salt, derive 512 bits, and split them
-into DK1 and DK2. DK1 encrypts/authenticates with the existing AES-256-GCM
-implementation. The mapped payload contains only the AEAD authentication tag
-and ciphertext; for `HI` it is 36 h4 characters. DK2 drives SHAKE-128 position
-generation. Server A embeds the mapped payload with `EmbedderLLM` and sends
-the cover text to Server B, which regenerates positions, extracts, inverse
-maps, authenticates, and decrypts it. Both terminals display their respective
-pipeline stages. Restart Server B before each new one-shot connection.
+In ECDHE mode, the peers exchange their X25519 public keys as ten alternating
+LLM-generated cover-text messages: each side splits its key into five
+segments, maps each segment, embeds it with `EmbedderLLM`, and sends the
+generated carrier for its peer to extract. Each side derives a pair of
+position keys with PBKDF2-HMAC-SHA256, using the 16-byte random session ID
+(sent as the PBKDF2 salt) and `LLM_SHIELD_PREVIOUS_SHARED_SECRET`. Server A
+embeds its five segments with DK1 and extracts Server B's with DK2; Server B
+embeds with DK2 and extracts Server A's with DK1. Position indices are
+recomputed by the receiver and are not sent in the carrier frame. The setting
+must have the same value at both servers. If unset, the empty string is used as
+the PBKDF2 input so first-time bootstrap works; because that input and the salt
+are public/default, these positions are not secret and this default does not
+protect against an observer or an active man-in-the-middle. Configure a
+previously shared secret on both servers if the key-carrier positions need to
+be confidential. X25519 public-key authentication against an active
+man-in-the-middle is not provided by this demo.
+
+Set the optional bootstrap secret in both PowerShell terminals before starting
+the receiver and sender:
+
+```powershell
+$env:LLM_SHIELD_PREVIOUS_SHARED_SECRET = "your previously shared secret"
+```
+
+After all ten messages, both sides independently derive the X25519 shared
+secret and confirm key possession. Only then does the sender request a secret
+message (unless supplied with `--message` or `--secret`). In PSK mode, the
+peers instead enter their shared password.
+
+Both modes then share a PBKDF2 salt, derive 512 bits, and split them into DK1
+and DK2. DK1 encrypts/authenticates with the existing AES-256-GCM
+implementation. The mapped secret payload contains only the AEAD
+authentication tag and ciphertext; for `HI` it is 36 h4 characters. DK2
+drives SHAKE-128 position generation. Server A embeds the mapped secret
+payload with `EmbedderLLM` and sends the cover text to Server B, which
+regenerates positions, extracts, inverse maps, authenticates, and decrypts it.
+The terminals show compact per-carrier progress instead of printing every
+embedded character, position, derived key, and cipher intermediate. Restart
+Server B before each new one-shot connection.
 
 The in-process, bidirectional HKDF example remains available in
 `python -m app.crypto.ecdhe_demo`:
@@ -324,7 +353,7 @@ The Phase 1 implementation is complete, and the test suite is intended to pass o
 
 Run the server using these commands:
 
-Terminal 1 — Server B:
+Terminal 1 — Server B: . 
 
 .\.venv\Scripts\python.exe server_b.py
 

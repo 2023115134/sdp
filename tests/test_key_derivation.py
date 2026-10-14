@@ -71,3 +71,14 @@ def test_rejects_invalid_password_or_salt_inputs():
 
     with pytest.raises(TypeError):
         derive_keys("password", None)  # type: ignore[arg-type]
+
+
+def test_empty_password_is_available_only_when_explicitly_enabled():
+    salt = b"session-bootstrap"
+
+    with pytest.raises(ValueError, match="password must not be empty"):
+        derive_keys("", salt)
+
+    dk1, dk2 = derive_keys("", salt, allow_empty_password=True)
+    assert len(dk1) == len(dk2) == 32
+    assert dk1 != dk2

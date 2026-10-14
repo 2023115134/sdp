@@ -628,11 +628,7 @@ def main() -> None:
             break
         print("Topic cannot be empty.")
 
-    while True:
-        secret = args.secret.strip() if args.secret else input("Enter secret message: ").strip()
-        if secret:
-            break
-        print("Secret message cannot be empty.")
+    secret = args.secret.strip()
 
     if mode == "psk":
         password = args.password if args.password else getpass.getpass("Enter password: ")
