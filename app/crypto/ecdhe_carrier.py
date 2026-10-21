@@ -20,6 +20,7 @@ PUBLIC_KEY_SEGMENT_COUNT = 5
 PUBLIC_KEY_EXCHANGE_MESSAGE_COUNT = PUBLIC_KEY_SEGMENT_COUNT * 2
 _PUBLIC_KEY_SEGMENT_LENGTHS = (7, 7, 6, 6, 6)
 _MAX_CARRIER_LENGTH = 100_000
+_MAX_EMBED_CANDIDATE_ATTEMPTS = 75_000
 
 
 def split_public_key(public_key: bytes) -> list[bytes]:
@@ -130,8 +131,8 @@ def embed_public_key_segment(
         temperature=0.7,
         top_k=20,
         max_new_tokens=32,
-        max_attempts=15000,
-        max_retries=3,
+        max_attempts=_MAX_EMBED_CANDIDATE_ATTEMPTS,
+        max_retries=12,
         allow_adaptive_positions=False,
         verbose=verbose,
         progress_callback=progress_callback,
@@ -187,7 +188,7 @@ def extract_public_key_segment(
     if positions[-1] >= len(cover_text):
         raise ValueError("public-key carrier text is too short for extracted positions")
 
-    mapped = Extractor.extract(cover_text, positions)
+    mapped = Extractor.extract(cover_text, positions).upper()
     encoded_segment = CharacterMap().decode(mapped)
     try:
         segment = bytes.fromhex(encoded_segment)

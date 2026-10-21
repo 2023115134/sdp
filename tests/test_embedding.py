@@ -1,3 +1,7 @@
+import random
+
+import pytest
+
 from app.crypto.mapping import CharacterMap
 from app.crypto.position_generator import PositionGenerator
 from app.extraction.extractor import Extractor
@@ -100,13 +104,13 @@ def test_embedder_only_appends_final_tail_after_embedded_position():
     assert result.story.endswith(".") or result.story.endswith("!") or result.story.endswith("?")
 
 
-def test_normal_candidate_prefers_fresh_text_but_keeps_repetitive_fallback():
+def test_normal_candidate_prefers_fresh_text_and_rejects_repetitive_only_option():
     embedder = EmbedderLLM()
     repeated = _FakeCandidate(" story", probability=0.99)
     fresh = _FakeCandidate(" river", probability=0.5)
 
     selected = embedder._select_normal_candidate(
-        story="The story story story story story story.",
+        story="The traveler read a story beside the road.",
         candidates=[repeated, fresh],
         topic="a journey",
     )
@@ -118,7 +122,84 @@ def test_normal_candidate_prefers_fresh_text_but_keeps_repetitive_fallback():
         candidates=[repeated],
         topic="a journey",
     )
-    assert only_option is repeated
+    assert only_option is None
+
+
+def test_runaway_synonym_lists_are_rejected_before_more_text_is_added():
+    embedder = EmbedderLLM()
+    word_list = (
+        "zealously, fervently, passionately, ardently, enthusiastically, "
+        "zealotically, fervorously, continuously, magnificently, "
+        "disproportionately, tirelessly"
+    )
+
+    assert embedder._is_degraded_continuation(
+        "The house was decorated ",
+        word_list,
+    )
+    assert embedder._select_normal_candidate(
+        story="The house was decorated ",
+        candidates=[_FakeCandidate(word_list, probability=0.9)],
+        topic="a home",
+    ) is None
+
+    emotion_list = (
+        "happiness, joy, contentment, bliss, elation, joy, elated, "
+        "elation, elate, elated, nostalgia, melancholy, melancholic, melancholia"
+    )
+    assert embedder._is_degraded_continuation("", emotion_list)
+    assert embedder._select_embedding_candidate(
+        story="",
+        candidates=[_FakeCandidate(emotion_list, probability=0.95)],
+        character="h",
+        position=0,
+        topic="a quiet home",
+    ) is None
+
+
+def test_degraded_prior_sentence_does_not_reject_a_candidate_that_finishes_it(
+    monkeypatch,
+):
+    embedder = EmbedderLLM()
+    monkeypatch.setattr(embedder, "_candidate_naturalness", lambda **kwargs: 1.0)
+    story = (
+        "The garden held roses, lilies, tulips, daisies, and violets"
+    )
+    candidate = _FakeCandidate(" On the path, he paused.", probability=0.5)
+
+    assert not embedder._is_degraded_continuation(story, candidate.token)
+    selected = embedder._select_embedding_candidate(
+        story=story,
+        candidates=[candidate],
+        character="O",
+        position=len(story) + 1,
+        topic="a garden path",
+    )
+
+    assert selected is not None
+    assert selected[1] is candidate
+    assert (story + candidate.token)[len(story) + 1] == "O"
+
+
+def test_normal_selection_varies_only_among_near_equal_candidates():
+    embedder = EmbedderLLM()
+    embedder._selection_rng = random.Random(17)
+    candidates = [
+        _FakeCandidate(" river", probability=0.8),
+        _FakeCandidate(" meadow", probability=0.8),
+        _FakeCandidate(" the same scene again", probability=0.01),
+    ]
+
+    selections = {
+        embedder._select_normal_candidate(
+            story="A traveler followed the path.",
+            candidates=candidates,
+            topic="a journey",
+        ).token
+        for _ in range(30)
+    }
+
+    assert selections == {" river", " meadow"}
 
 
 def test_embedding_candidate_prefers_natural_phrase_over_repeated_frame():
@@ -211,6 +292,94 @@ def test_candidate_ranking_penalizes_adjective_lists_and_related_stems():
         == embedder._word_stem("revitalized")
         == embedder._word_stem("revitalization")
     )
+
+
+def test_candidate_naturalness_rewards_topic_relevance_and_complete_sentences():
+    embedder = EmbedderLLM()
+    story = "The room grew quiet. "
+
+    relevant = embedder._candidate_naturalness(
+        story=story,
+        token=" The classroom teacher began the lesson.",
+        topic="classroom lesson",
+    )
+    unrelated = embedder._candidate_naturalness(
+        story=story,
+        token=" A distant ship crossed the harbor.",
+        topic="classroom lesson",
+    )
+    incomplete = embedder._candidate_naturalness(
+        story=story,
+        token=" The students waited for.",
+        topic="classroom lesson",
+    )
+
+    assert relevant > unrelated
+    assert relevant > incomplete
+    assert EmbedderLLM._validate_cover_naturalness(
+        "The students waited for.",
+        "classroom lesson",
+    )["sentence_completeness"] is False
+
+
+def test_retry_schedule_is_bounded_and_keeps_topic_separate_from_guidance(monkeypatch):
+    embedder = EmbedderLLM()
+    embedder._verbose = False
+    calls = []
+
+    def reject_candidate(**kwargs):
+        calls.append(kwargs)
+        embedder._last_failure_reason = "no natural candidate"
+        return None
+
+    monkeypatch.setattr(embedder, "_generate_to_position", reject_candidate)
+
+    with pytest.raises(RuntimeError, match="after 12 controlled retry configurations"):
+        embedder._embed_one_character(
+            story="The existing scene continues.",
+            character="E",
+            position=50,
+            topic="a quiet classroom",
+            temperature=0.65,
+            top_k=25,
+            max_retries=100,
+            max_steps=1,
+            max_attempts=100,
+            attempt_counter=[0],
+        )
+
+    assert len(calls) == 12
+    assert {call["topic"] for call in calls} == {"a quiet classroom"}
+    assert calls[0]["temperature"] == 0.65
+    assert calls[0]["top_k"] == 25
+    assert any(call["retry_guidance"] for call in calls)
+    assert embedder._embedding_stats["retries"] == 12
+
+
+def test_fallback_candidate_query_is_included_in_call_and_attempt_counts():
+    class CandidateGenerator:
+        def get_next_token_candidates(self, prompt, top_k, temperature):
+            return [_FakeCandidate("a")]
+
+    embedder = EmbedderLLM(llm_generator=CandidateGenerator())
+    attempts = [0]
+
+    result = embedder._generate_to_position(
+        story="",
+        character="Z",
+        position=0,
+        topic="a classroom",
+        temperature=0.7,
+        top_k=40,
+        max_steps=1,
+        max_attempts=10,
+        attempt_counter=attempts,
+    )
+
+    assert result is None
+    assert attempts == [2]
+    assert embedder._embedding_stats["llm_calls"] == 2
+    assert embedder._embedding_stats["candidate_evaluations"] == 2
 
 
 def test_cover_tail_uses_one_bounded_text_generation():

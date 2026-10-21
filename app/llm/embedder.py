@@ -17,7 +17,7 @@ Core flow:
         find candidate satisfying C_i == Story[b_i]
       |
       v
-    Select the most probable natural candidate
+    Select a high-ranked natural candidate with mild variation
       |
       v
     Continue to next target position
@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import math
+import random
 import re
 import time
 from collections import Counter
@@ -62,7 +63,7 @@ class EmbedderLLM:
     MAX_TOP_K = 100
     DIRECT_FALLBACK_TOP_K = 1000
     SPACE_FALLBACK_TOP_K = 1000
-    DIRECT_FALLBACK_WINDOW = 96
+    DIRECT_FALLBACK_WINDOW = 32
 
     DEFAULT_RETRIES = 12
 
@@ -70,6 +71,8 @@ class EmbedderLLM:
     PROBABILITY_WEIGHT = 1.0
     NATURALNESS_WEIGHT = 2.0
     MIN_CANDIDATE_PROBABILITY = 1e-5
+    RANDOM_SELECTION_SCORE_WINDOW = 0.04
+    RANDOM_SELECTION_TEMPERATURE = 0.025
 
     # Don't allow generation to run forever.
     DEFAULT_MAX_STEPS = 300
@@ -87,7 +90,7 @@ class EmbedderLLM:
     }
     ADJECTIVE_LIKE_SUFFIXES = (
         "ful", "ous", "ive", "less", "able", "ible", "al", "ish",
-        "izing", "ized", "ing",
+        "izing", "ized", "ing", "ly",
     )
     ADJECTIVE_LIKE_WORDS = {
         "calm", "clear", "focused", "gentle", "happy", "kind",
@@ -128,6 +131,7 @@ class EmbedderLLM:
             if character_map is not None
             else CharacterMap()
         )
+        self._selection_rng = random.Random()
         self._embedding_stats = {
             "llm_calls": 0,
             "candidate_evaluations": 0,
@@ -192,9 +196,18 @@ class EmbedderLLM:
         return actual.upper() == required.upper()
 
     @staticmethod
-    def _model_prompt(topic: str, story: str) -> str:
+    def _model_prompt(
+        topic: str,
+        story: str,
+        retry_guidance: str = "",
+    ) -> str:
         """Give Qwen narrative instructions while preserving cover indexing."""
 
+        retry_note = (
+            f"Additional direction for this attempt: {retry_guidance}\n"
+            if retry_guidance
+            else ""
+        )
         return (
             "Continue a coherent, natural short story in ordinary English, "
             "not a list of keywords or descriptions. "
@@ -204,14 +217,37 @@ class EmbedderLLM:
             "words from the story so far. Introduce a new event, action, or "
             "detail only when it fits the ongoing scene. Prefer complete "
             "sentences with clear people or things doing meaningful actions; "
-            "use natural transitions and varied sentence structure. Do not "
-            "stack adjectives, synonyms, or comma-separated fragments. Avoid "
+            "use natural transitions and varied sentence structure. Each "
+            "sentence should describe a coherent action or observation. Do not "
+            "replace a sentence with a list of synonyms, adjectives, emotions, "
+            "or adverbs; do not keep rephrasing the same idea. Avoid "
             "formulas, questions, technical language, Markdown, numbered lists, "
             "headings, and dictionary-like text. Do not mention hidden messages. "
             "Maintain narrative continuity.\n"
+            f"{retry_note}"
             "Story so far:\n"
             f"{story}"
         )
+
+    @staticmethod
+    def _sentence_looks_complete(sentence: str) -> bool:
+        words = re.findall(r"[A-Za-z]+", sentence.lower())
+        if len(words) < 2:
+            return False
+        return words[-1] not in {
+            "a", "an", "the", "and", "but", "or", "to", "of", "in",
+            "on", "at", "for", "with", "by", "from", "because", "while",
+            "is", "are", "was", "were", "has", "have", "had",
+        }
+
+    @classmethod
+    def _has_complete_ending(cls, story: str) -> bool:
+        if cls._needs_completion(story):
+            return False
+        stripped = story.rstrip().rstrip("\"'”’")
+        sentences = re.split(r"[.!?]", stripped)
+        final_sentence = sentences[-2] if len(sentences) > 1 else stripped
+        return cls._sentence_looks_complete(final_sentence)
 
     @staticmethod
     def verify_embedding(
@@ -478,6 +514,28 @@ class EmbedderLLM:
         candidate_stems = {self._word_stem(word) for word in candidate_words}
         if topic_words.intersection(candidate_words) or topic_stems.intersection(candidate_stems):
             score += 0.2
+        elif topic_words and not (
+            topic_words.intersection(words)
+            or topic_stems.intersection(
+                {self._word_stem(word) for word in words}
+            )
+        ):
+            score -= 0.12
+
+        # Favor candidates that finish a grammatical sentence, while treating
+        # intermediate token boundaries as continuable rather than incomplete.
+        stripped_text = text.rstrip()
+        if stripped_text.endswith((".", "!", "?")):
+            final_sentence = re.split(r"[.!?]", stripped_text)[-2].strip()
+            if self._sentence_looks_complete(final_sentence):
+                score += 0.08
+            else:
+                score -= 0.15
+        elif words and words[-1] in {
+            "a", "an", "the", "to", "of", "in", "on", "at", "for",
+            "with", "by", "from", "because", "while",
+        }:
+            score -= 0.08
 
         # --------------------------------------------------------------
         # Bad boundary.
@@ -621,6 +679,67 @@ class EmbedderLLM:
         return False
 
     @classmethod
+    def _is_degraded_continuation(cls, story: str, token: str) -> bool:
+        """Reject list-like candidates without re-rejecting prior story text."""
+        candidate_fragment = re.split(r"[.!?]", token)[-1]
+        candidate_words = re.findall(r"[A-Za-z]+", candidate_fragment.lower())
+        if len(candidate_words) > 55:
+            return True
+
+        candidate_commas = candidate_fragment.count(",")
+        descriptive_words = [
+            word
+            for word in candidate_words
+            if cls._is_adjective_like(word)
+        ]
+        if (
+            len(candidate_words) >= 12
+            and candidate_commas >= 4
+            and len(descriptive_words) >= 5
+        ):
+            return True
+        if len(candidate_words) >= 14 and candidate_commas >= 4:
+            return True
+        if len(candidate_words) >= 8 and candidate_commas >= 3:
+            return True
+
+        # When the existing sentence is already list-heavy, reject only another
+        # list-like item, not an ordinary continuation that can finish the thought.
+        existing_fragment = re.split(r"[.!?]", story)[-1]
+        existing_commas = existing_fragment.count(",")
+        ends_sentence = candidate_fragment.rstrip().endswith((".", "!", "?"))
+        if (
+            existing_commas >= 4
+            and candidate_words
+            and candidate_commas
+            and not ends_sentence
+        ):
+            new_descriptive_words = sum(
+                cls._is_adjective_like(word)
+                for word in candidate_words
+            )
+            if new_descriptive_words or len(candidate_words) >= 3:
+                return True
+
+        existing_stems = Counter(
+            cls._word_stem(word)
+            for word in re.findall(r"[A-Za-z]+", story.lower())
+            if len(word) >= 4 and word not in cls.STOPWORDS
+        )
+        candidate_stems = Counter(
+            cls._word_stem(word)
+            for word in candidate_words
+            if len(word) >= 4 and word not in cls.STOPWORDS
+        )
+        if any(
+            existing_stems[stem] + count >= 4
+            for stem, count in candidate_stems.items()
+        ):
+            return True
+
+        return False
+
+    @classmethod
     def _validate_cover_naturalness(
         cls,
         story: str,
@@ -738,26 +857,38 @@ class EmbedderLLM:
         # Topic relevance
         # --------------------------------------------------------------
 
+        topic_stems = {cls._word_stem(word) for word in topic_words}
+        story_stems = {cls._word_stem(word) for word in words}
         topic_relevance = bool(
             topic_words.intersection(words)
+            or topic_stems.intersection(story_stems)
         )
 
         # --------------------------------------------------------------
         # Sentence completeness
         # --------------------------------------------------------------
 
-        sentence_complete = not cls._needs_completion(story)
+        sentence_complete = cls._has_complete_ending(story)
+        grammar = (
+            not malformed_boundary
+            and not technical_pattern
+            and not repeated_words
+            and sentence_complete
+        )
+        repetition = (
+            not repeated_words
+            and not repeated_ngrams
+            and not repeated_nearby
+            and dominant_content_word <= 5
+            and repeated_phrase_count <= 2
+            and repeated_collocation_count <= 1
+        )
 
         return {
             "topic_relevance": topic_relevance,
-            "repetition": (
-                not repeated_words
-                and not repeated_ngrams
-                and not repeated_nearby
-                and dominant_content_word <= 5
-                and repeated_phrase_count <= 2
-                and repeated_collocation_count <= 1
-            ),
+            "repetition": repetition,
+            "grammar": grammar,
+            "coherence": topic_relevance and repetition and grammar,
             "sentence_completeness": sentence_complete,
             "malformed_or_technical": (
                 not malformed_boundary
@@ -784,7 +915,7 @@ class EmbedderLLM:
         topic: str,
         max_tokens: int = 80,
     ) -> str:
-        if not self._needs_completion(story):
+        if self._has_complete_ending(story):
             return story
 
         token_limit = min(max_tokens, 48)
@@ -852,6 +983,32 @@ class EmbedderLLM:
             + self.NATURALNESS_WEIGHT * naturalness
         ) / (self.PROBABILITY_WEIGHT + self.NATURALNESS_WEIGHT)
 
+    def _choose_ranked_candidate(self, ranked_candidates):
+        """Add mild variation among near-equal candidates without lowering gates."""
+        if not ranked_candidates:
+            return None
+
+        best_score = ranked_candidates[0][0]
+        near_best = [
+            item
+            for item in ranked_candidates
+            if best_score - item[0] <= self.RANDOM_SELECTION_SCORE_WINDOW
+        ]
+        if len(near_best) == 1:
+            return near_best[0]
+
+        weights = [
+            math.exp(
+                (score - best_score) / self.RANDOM_SELECTION_TEMPERATURE
+            )
+            for score, *_ in near_best
+        ]
+        return self._selection_rng.choices(
+            near_best,
+            weights=weights,
+            k=1,
+        )[0]
+
     def _select_normal_candidate(
         self,
         story: str,
@@ -862,13 +1019,7 @@ class EmbedderLLM:
         if not candidates:
             return None
 
-        best = None
-        best_score = float("-inf")
-        has_non_repetitive_candidate = any(
-            candidate.token
-            and not self._is_repetitive_continuation(story, candidate.token)
-            for candidate in candidates
-        )
+        ranked_candidates = []
 
         for candidate in candidates:
 
@@ -882,13 +1033,21 @@ class EmbedderLLM:
             if re.search(r"(?:^|\s)(?:\*\*|#+|\d+\.)", token):
                 continue
 
-            if (
-                has_non_repetitive_candidate
-                and self._is_repetitive_continuation(story, token)
-            ):
+            if self._is_degraded_continuation(story, token):
+                continue
+
+            if self._is_repetitive_continuation(story, token):
                 continue
 
             if candidate.probability < self.MIN_CANDIDATE_PROBABILITY:
+                continue
+
+            naturalness = self._candidate_naturalness(
+                story=story,
+                token=token,
+                topic=topic,
+            )
+            if naturalness < 0.25:
                 continue
 
             score = self._score_candidate(
@@ -896,14 +1055,20 @@ class EmbedderLLM:
                 token=token,
                 probability=candidate.probability,
                 topic=topic,
+                naturalness=naturalness,
             )
 
-            if score > best_score:
+            ranked_candidates.append((score, candidate))
 
-                best_score = score
-                best = candidate
+        if not ranked_candidates:
+            self._last_failure_reason = (
+                "no continuation passed repetition and naturalness checks"
+            )
+            return None
 
-        return best
+        ranked_candidates.sort(key=lambda item: item[0], reverse=True)
+        selected = self._choose_ranked_candidate(ranked_candidates)
+        return selected[1] if selected is not None else None
 
     def _select_embedding_candidate(
         self,
@@ -926,6 +1091,13 @@ class EmbedderLLM:
 
             if not token:
                 rejection_reasons.append("empty token")
+                continue
+
+            if self._is_degraded_continuation(story, token):
+                rejection_reasons.append("candidate continues a list or repetition")
+                continue
+            if self._is_repetitive_continuation(story, token):
+                rejection_reasons.append("candidate repeats existing text")
                 continue
 
             new_story = story + token
@@ -991,7 +1163,7 @@ class EmbedderLLM:
             reverse=True,
         )
 
-        return valid[0]
+        return self._choose_ranked_candidate(valid)
 
     def _select_space_candidate(
         self,
@@ -1009,6 +1181,12 @@ class EmbedderLLM:
             token = candidate.token
             if not token:
                 rejection_reasons.append("empty token")
+                continue
+            if self._is_degraded_continuation(story, token):
+                rejection_reasons.append("candidate continues a list or repetition")
+                continue
+            if self._is_repetitive_continuation(story, token):
+                rejection_reasons.append("candidate repeats existing text")
                 continue
 
             if candidate.probability < self.MIN_CANDIDATE_PROBABILITY:
@@ -1061,7 +1239,7 @@ class EmbedderLLM:
             return None
 
         valid.sort(key=lambda item: item[0], reverse=True)
-        return valid[0]
+        return self._choose_ranked_candidate(valid)
 
     def _select_space_boundary_fallback(
         self,
@@ -1163,11 +1341,12 @@ class EmbedderLLM:
         max_steps: int,
         max_attempts: int,
         attempt_counter: list[int],
+        retry_guidance: str = "",
     ):
 
         self._last_failure_reason = "generation did not reach the target position"
 
-        for step in range(max_steps):
+        for _ in range(max_steps):
 
             if len(story) > position:
                 if self._character_matches(
@@ -1186,7 +1365,11 @@ class EmbedderLLM:
             candidates = (
                 self.llm_generator
                 .get_next_token_candidates(
-                    prompt=self._model_prompt(topic, story),
+                    prompt=self._model_prompt(
+                        topic,
+                        story,
+                        retry_guidance=retry_guidance,
+                    ),
                     top_k=top_k,
                     temperature=temperature,
                 )
@@ -1246,13 +1429,24 @@ class EmbedderLLM:
                 top_k < fallback_top_k
                 and distance_to_target <= self.DIRECT_FALLBACK_WINDOW
             ):
+                self._embedding_stats["llm_calls"] += 1
                 fallback_candidates = (
                     self.llm_generator.get_next_token_candidates(
-                        prompt=self._model_prompt(topic, story),
+                        prompt=self._model_prompt(
+                            topic,
+                            story,
+                            retry_guidance=retry_guidance,
+                        ),
                         top_k=fallback_top_k,
                         temperature=temperature,
                     )
                 )
+                attempt_counter[0] += len(fallback_candidates)
+                if attempt_counter[0] > max_attempts:
+                    self._last_failure_reason = (
+                        f"maximum candidate attempts exceeded ({max_attempts})"
+                    )
+                    return None
 
                 if character == " ":
                     selected = self._select_space_candidate(
@@ -1366,6 +1560,7 @@ class EmbedderLLM:
         topic: str,
         max_steps: int,
         following_gap: int | None,
+        attempt_counter: list[int] | None = None,
     ) -> tuple[str, int] | None:
         """Naturally generate until a real model token carries the character."""
 
@@ -1385,11 +1580,16 @@ class EmbedderLLM:
             if not candidates:
                 self._last_failure_reason = "Qwen returned no adaptive candidates"
                 return None
+            if attempt_counter is not None:
+                attempt_counter[0] += len(candidates)
 
             suitable: list[tuple[float, object, int]] = []
             for candidate in candidates:
+                self._embedding_stats["candidate_evaluations"] += 1
                 token = candidate.token
                 if not token or self._is_repetitive_continuation(story, token):
+                    continue
+                if self._is_degraded_continuation(story, token):
                     continue
                 if re.search(r"(?:^|\s)(?:\*\*|#+|\d+\.)", token):
                     continue
@@ -1410,19 +1610,32 @@ class EmbedderLLM:
                     ):
                         continue
 
-                    if (
-                        self._candidate_naturalness(story, token, topic) < 0.25
-                    ):
+                    naturalness = self._candidate_naturalness(
+                        story,
+                        token,
+                        topic,
+                    )
+                    if naturalness < 0.25:
                         continue
                     suitable.append(
-                        (candidate.probability, candidate, absolute_position)
+                        (
+                            self._score_candidate(
+                                story,
+                                token,
+                                candidate.probability,
+                                topic,
+                                naturalness=naturalness,
+                            ),
+                            candidate,
+                            absolute_position,
+                        )
                     )
                     break
 
             if suitable:
-                _, selected, absolute_position = max(
-                    suitable,
-                    key=lambda item: item[0],
+                suitable.sort(key=lambda item: item[0], reverse=True)
+                _, selected, absolute_position = self._choose_ranked_candidate(
+                    suitable
                 )
                 self._last_failure_reason = ""
                 return story + selected.token, absolute_position
@@ -1467,99 +1680,117 @@ class EmbedderLLM:
         """
         Embed one required character at the fixed target position.
 
-        Use the fixed retry order required by the paper workflow.
+        Try a bounded schedule of temperature and candidate-pool adjustments.
         """
 
         original_story = story
         last_failure_reason = "unknown embedding failure"
         character_started = time.perf_counter()
         character_stats_start = dict(self._embedding_stats)
-        retry_schedule = [
-            (0.70, 40), (0.70, 50), (0.70, 60),
-            (0.75, 40), (0.75, 60), (0.75, 80),
-            (0.80, 40), (0.80, 60), (0.80, 100),
-        ]
-        retry_instructions = (
+        base_temperature = min(temperature, self.MAX_TEMPERATURE)
+        base_top_k = min(top_k, self.MAX_TOP_K)
+        temperature_steps = (
+            base_temperature,
+            min(base_temperature + 0.05, self.MAX_TEMPERATURE),
+            min(base_temperature + 0.10, self.MAX_TEMPERATURE),
+            min(base_temperature + 0.15, self.MAX_TEMPERATURE),
+        )
+        top_k_steps = (
+            base_top_k,
+            min(base_top_k + 10, self.MAX_TOP_K),
+            min(base_top_k + 20, self.MAX_TOP_K),
+            min(base_top_k + 40, self.MAX_TOP_K),
+            min(base_top_k + 60, self.MAX_TOP_K),
+        )
+        retry_schedule = list(dict.fromkeys((
+            (temperature_steps[0], top_k_steps[0]),
+            (temperature_steps[0], top_k_steps[1]),
+            (temperature_steps[0], top_k_steps[2]),
+            (temperature_steps[1], top_k_steps[0]),
+            (temperature_steps[1], top_k_steps[2]),
+            (temperature_steps[1], top_k_steps[3]),
+            (temperature_steps[2], top_k_steps[0]),
+            (temperature_steps[2], top_k_steps[2]),
+            (temperature_steps[2], top_k_steps[4]),
+            (temperature_steps[3], top_k_steps[0]),
+            (temperature_steps[3], top_k_steps[2]),
+            (temperature_steps[3], top_k_steps[4]),
+        )))
+        retry_limit = min(max_retries, len(retry_schedule))
+        retry_guidance = (
             "",
-            " Use a fresh narrative continuation and vary the wording.",
-            " Take a different natural narrative path while staying on topic.",
+            "Continue the same scene with a fresh, topic-related action.",
+            "Vary the sentence structure without introducing a new scene.",
+            "Advance the existing scene with one concrete action, not a list.",
+            "Use a complete, concise sentence that follows from the last event.",
+            "Keep the same people and setting; avoid repeating earlier details.",
         )
 
-        for retry_round in range(1, max_retries + 1):
-            if retry_round > 1:
-                # A fresh candidate query is the explicit state change that
-                # justifies another pass through the paper schedule.
-                candidate_cache = getattr(self.llm_generator, "_candidate_cache", None)
-                if candidate_cache is None:
-                    break
-                candidate_cache.clear()
-
-            for schedule_number, (retry_temperature, retry_top_k) in enumerate(
-                retry_schedule,
-                start=1,
-            ):
-                retry_number = ((retry_round - 1) * len(retry_schedule)) + schedule_number
-                self._embedding_stats["retries"] += 1
-                if getattr(self, "_verbose", True):
-                    print(
-                        f"Retry {retry_number}: T={retry_temperature:.2f} "
-                        f"k={retry_top_k}",
-                        flush=True,
-                    )
-                progress_callback = getattr(self, "_progress_callback", None)
-                if progress_callback is not None:
-                    progress_callback(
-                        self._progress_completed,
-                        self._progress_total,
-                        f"retry {retry_number}",
-                    )
-
-                story = original_story
-                retry_topic = topic + retry_instructions[(retry_round - 1) % len(retry_instructions)]
-                retry_attempt_counter = [0]
-
-                result = self._generate_to_position(
-                    story=story,
-                    character=character,
-                    position=position,
-                    topic=retry_topic,
-                    temperature=retry_temperature,
-                    top_k=retry_top_k,
-                    max_steps=max_steps,
-                    max_attempts=max_attempts,
-                    attempt_counter=retry_attempt_counter,
+        for retry_number, (retry_temperature, retry_top_k) in enumerate(
+            retry_schedule[:retry_limit],
+            start=1,
+        ):
+            self._embedding_stats["retries"] += 1
+            if getattr(self, "_verbose", True):
+                print(
+                    f"Retry {retry_number}: T={retry_temperature:.2f} "
+                    f"k={retry_top_k} ({retry_number}/{retry_limit})",
+                    flush=True,
                 )
-                attempt_counter[0] += retry_attempt_counter[0]
+            progress_callback = getattr(self, "_progress_callback", None)
+            if progress_callback is not None:
+                progress_callback(
+                    self._progress_completed,
+                    self._progress_total,
+                    f"retry {retry_number}/{retry_limit}",
+                )
 
-                if result is not None:
-                    if (
-                        position < len(result)
-                        and self._character_matches(
-                            result[position],
-                            character,
+            story = original_story
+            result = self._generate_to_position(
+                story=story,
+                character=character,
+                position=position,
+                topic=topic,
+                temperature=retry_temperature,
+                top_k=retry_top_k,
+                max_steps=max_steps,
+                max_attempts=max_attempts,
+                attempt_counter=attempt_counter,
+                retry_guidance=retry_guidance[(retry_number - 1) % len(retry_guidance)],
+            )
+
+            if result is not None:
+                if (
+                    position < len(result)
+                    and self._character_matches(
+                        result[position],
+                        character,
+                    )
+                ):
+                    if getattr(self, "_verbose", True):
+                        print("Status: Embedded successfully", flush=True)
+                        elapsed = time.perf_counter() - character_started
+                        print(
+                            "Character stats: "
+                            f"LLM calls={self._embedding_stats['llm_calls'] - character_stats_start['llm_calls']}, "
+                            f"candidate evaluations={self._embedding_stats['candidate_evaluations'] - character_stats_start['candidate_evaluations']}, "
+                            f"retries={self._embedding_stats['retries'] - character_stats_start['retries']}, "
+                            f"time={elapsed:.2f}s",
+                            flush=True,
                         )
-                    ):
-                        if getattr(self, "_verbose", True):
-                            print("Status: Embedded successfully", flush=True)
-                            elapsed = time.perf_counter() - character_started
-                            print(
-                                "Character stats: "
-                                f"LLM calls={self._embedding_stats['llm_calls'] - character_stats_start['llm_calls']}, "
-                                f"candidate evaluations={self._embedding_stats['candidate_evaluations'] - character_stats_start['candidate_evaluations']}, "
-                                f"retries={self._embedding_stats['retries'] - character_stats_start['retries']}, "
-                                f"time={elapsed:.2f}s",
-                                flush=True,
-                            )
-                        return result
+                    return result
 
-                last_failure_reason = getattr(
-                    self,
-                    "_last_failure_reason",
-                    "candidate rejected or generation did not reach the position",
-                )
-                if getattr(self, "_verbose", True):
-                    print(f"Candidate rejected: {last_failure_reason}", flush=True)
+            last_failure_reason = getattr(
+                self,
+                "_last_failure_reason",
+                "candidate rejected or generation did not reach the position",
+            )
+            if getattr(self, "_verbose", True):
+                print(f"Candidate rejected: {last_failure_reason}", flush=True)
+                if retry_number < retry_limit:
                     print("Retrying same character and position...", flush=True)
+            if attempt_counter[0] >= max_attempts:
+                break
 
         if getattr(self, "_verbose", True):
             elapsed = time.perf_counter() - character_started
@@ -1577,7 +1808,7 @@ class EmbedderLLM:
             )
         raise RuntimeError(
             f"Unable to embed character '{character}' at position {position} "
-            f"after {max_retries} retry rounds and all retry configurations. "
+            f"after {retry_limit} controlled retry configurations. "
             f"Last rejection reason: {last_failure_reason}."
         )
 
@@ -1687,9 +1918,13 @@ class EmbedderLLM:
                 display_char = "SPACE" if character == " " else character
                 print("------------------------------------------------------------", flush=True)
                 print(f"Embedding {index + 1}/{len(characters)}", flush=True)
-                print(f"Character: {display_char}", flush=True)
+                if character == " ":
+                    print("Character: SPACE (' ')", flush=True)
+                else:
+                    print(f"Character: {display_char}", flush=True)
                 print(f"Position: {position}", flush=True)
 
+            character_stats_start = dict(self._embedding_stats)
             # The current story must never already be beyond target.
             if len(story) > position:
 
@@ -1735,6 +1970,7 @@ class EmbedderLLM:
                     topic=topic,
                     max_steps=max_new_tokens * 8,
                     following_gap=following_gap,
+                    attempt_counter=character_attempt_counter,
                 )
                 if adaptive_result is None:
                     if verbose:
@@ -1760,6 +1996,17 @@ class EmbedderLLM:
                     )
                     print(
                         "Status: Embedded successfully (adaptive placement)",
+                        flush=True,
+                    )
+                    elapsed_stats = {
+                        key: self._embedding_stats[key] - character_stats_start[key]
+                        for key in self._embedding_stats
+                    }
+                    print(
+                        "Character stats: "
+                        f"LLM calls={elapsed_stats['llm_calls']}, "
+                        f"candidate evaluations={elapsed_stats['candidate_evaluations']}, "
+                        f"retries={elapsed_stats['retries']}",
                         flush=True,
                     )
             total_attempt_counter[0] += character_attempt_counter[0]
@@ -1832,8 +2079,24 @@ class EmbedderLLM:
             topic=topic,
         )
 
+        if verbose:
+            print(
+                "Final embedding stats: "
+                f"characters={len(characters)}, "
+                f"attempts={total_attempt_counter[0]}, "
+                f"LLM calls={self._embedding_stats['llm_calls']}, "
+                f"candidate evaluations={self._embedding_stats['candidate_evaluations']}, "
+                f"retries={self._embedding_stats['retries']}",
+                flush=True,
+            )
         logger.info(
-            "Final cover naturalness: %s",
+            "Embedding complete: characters=%d attempts=%d llm_calls=%d "
+            "candidate_evaluations=%d retries=%d final_naturalness=%s",
+            len(characters),
+            total_attempt_counter[0],
+            self._embedding_stats["llm_calls"],
+            self._embedding_stats["candidate_evaluations"],
+            self._embedding_stats["retries"],
             naturalness,
         )
 

@@ -132,6 +132,11 @@ def test_two_server_pipeline_round_trip_hi(mode, position_shift, secret, monkeyp
         assert "ECDHE key exchange complete (10 alternating carriers)" in output
         assert "Carrier 1/10 sent (Server A)" in output
         assert "Carrier 2/10 received (Server B)" in output
+        assert "Carrier message sent by Server A" not in output
+        assert "Carrier message received by Server A" not in output
+        assert "Carrier message received by Server B" not in output
+        assert "Carrier message sent by Server B" not in output
+        assert output.count("A quiet city street at dusk") >= 11
     assert "LLM embedding: 36/36 characters (embedded)" in output
     assert f"{mode.upper()} carrier sent to Server B." in output
     assert f"Recovered plaintext       : {secret}" in output

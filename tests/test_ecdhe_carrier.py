@@ -21,7 +21,13 @@ def _fake_embed(self, topic, characters, positions, initial_story="", **kwargs):
 
 
 def test_public_key_carrier_positions_use_cross_peer_pbkdf2_keys(monkeypatch):
-    monkeypatch.setattr(EmbedderLLM, "embed", _fake_embed)
+    embed_calls = []
+
+    def capture_embed(self, topic, characters, positions, initial_story="", **kwargs):
+        embed_calls.append(kwargs)
+        return _fake_embed(self, topic, characters, positions, initial_story, **kwargs)
+
+    monkeypatch.setattr(EmbedderLLM, "embed", capture_embed)
     session_id = b"s" * 16
     dk1, dk2 = derive_carrier_position_keys("", session_id)
     public_key = bytes(range(32))
@@ -45,6 +51,9 @@ def test_public_key_carrier_positions_use_cross_peer_pbkdf2_keys(monkeypatch):
 
     assert "positions" not in frame_a
     assert "positions" not in frame_b
+    assert len(embed_calls) == 2
+    assert all(call["max_attempts"] == 75_000 for call in embed_calls)
+    assert all(call["max_retries"] == 12 for call in embed_calls)
     assert extract_public_key_segment(
         frame_a,
         expected_role="server_a",
@@ -57,6 +66,13 @@ def test_public_key_carrier_positions_use_cross_peer_pbkdf2_keys(monkeypatch):
         expected_segment_index=1,
         position_key=dk2,
     ) == segment_b
+    lowercase_frame_a = {**frame_a, "cover_text": frame_a["cover_text"].lower()}
+    assert extract_public_key_segment(
+        lowercase_frame_a,
+        expected_role="server_a",
+        expected_segment_index=0,
+        position_key=dk1,
+    ) == segment_a
 
     with pytest.raises((ValueError, IndexError)):
         extract_public_key_segment(

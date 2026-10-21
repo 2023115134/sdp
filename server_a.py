@@ -183,6 +183,7 @@ def send_message(
                     f"Carrier {segment_index * 2 + 1}/"
                     f"{PUBLIC_KEY_EXCHANGE_MESSAGE_COUNT} sent (Server A)"
                 )
+                print(own_frame["cover_text"], flush=True)
 
                 peer_frame = receive_json(connection)
                 peer_segment = extract_public_key_segment(
@@ -196,6 +197,7 @@ def send_message(
                     f"Carrier {segment_index * 2 + 2}/"
                     f"{PUBLIC_KEY_EXCHANGE_MESSAGE_COUNT} received (Server B)"
                 )
+                print(peer_frame["cover_text"], flush=True)
 
             peer_public_key = assemble_public_key(peer_segments)
             print(
@@ -369,7 +371,7 @@ def send_message(
             top_k=20,
             max_new_tokens=32,
             max_attempts=15000,
-            max_retries=3,
+            max_retries=12,
             allow_adaptive_positions=True,
             verbose=demonstration,
             progress_callback=report_payload_progress if not demonstration else None,

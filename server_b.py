@@ -141,6 +141,7 @@ def receive_message(
                     f"Carrier {segment_index * 2 + 1}/"
                     f"{PUBLIC_KEY_EXCHANGE_MESSAGE_COUNT} received (Server A)"
                 )
+                print(peer_frame["cover_text"], flush=True)
 
                 own_frame = embed_public_key_segment(
                     own_segment,
@@ -157,6 +158,7 @@ def receive_message(
                     f"Carrier {segment_index * 2 + 2}/"
                     f"{PUBLIC_KEY_EXCHANGE_MESSAGE_COUNT} sent (Server B)"
                 )
+                print(own_frame["cover_text"], flush=True)
 
             peer_public_key = assemble_public_key(peer_segments)
             shared_secret = derive_shared_secret(private_key, peer_public_key)

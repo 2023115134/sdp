@@ -59,7 +59,7 @@ def main() -> None:
         positions=positions,
         max_new_tokens=32,
         max_attempts=2500,
-        max_retries=3,
+        max_retries=12,
     )
     embedding_seconds = time.perf_counter() - started
 

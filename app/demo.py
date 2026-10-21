@@ -235,7 +235,7 @@ def _run_common_cover_pipeline(
         top_k=20,
         max_new_tokens=32,
         max_attempts=15000,
-        max_retries=3,
+        max_retries=12,
     )
     elapsed = time.perf_counter() - start
 
