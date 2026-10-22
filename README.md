@@ -4,7 +4,7 @@ This repository contains the Phase 1 implementation of an LLM-based covert commu
 
 ## Project Overview
 
-The project aims to build a research-oriented prototype for covert communication using large language models. The current implementation focuses on the core Phase 1 components:
+The project aims to build a research-oriented prototype for covert communication using large language models. The current implementation focuses on the core Phase 1 components and includes a localhost-only PSK demonstration UI:
 
 - LLM generation engine
 - reversible character mapping
@@ -16,7 +16,50 @@ The project aims to build a research-oriented prototype for covert communication
 
 ## Current Phase
 
-Phase 1 is the core implementation stage and includes the essential research contribution for the project. This version does not include a frontend, login system, or deployment layer.
+Phase 1 is the core implementation stage and includes the essential research contribution for the project. The web demonstration is intended for local academic review; it is not a production deployment or a claim of undetectability. The existing two-terminal TCP workflow supports both PSK and ECDHE. The web interface currently integrates the real PSK pipeline; it does not simulate or replace the TCP ECDHE exchange.
+
+## Local demonstration UI
+
+Run the following commands in PowerShell from the repository directory:
+
+```powershell
+cd "C:\Users\mrwhi\Downloads\temp\sdp"
+.\.venv\Scripts\python.exe -m app.web_server
+```
+
+Open **http://127.0.0.1:8765**. The server binds to localhost only. If the
+virtual environment has not been created, follow the setup steps above before
+starting the UI. The project requirements are installed with:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+The first complete sender run initializes or downloads the configured Hugging
+Face model, so it may take several minutes and requires internet access if the
+model is not already cached. Keep the browser tab open while the model runs.
+The interface uses the existing AES-GCM, PBKDF2, h4 mapping, SHAKE-128
+position-generation, `EmbedderLLM`, extraction, and authenticated decryption
+implementations. It shows public salt/nonce/AAD and derived-key lengths but
+does not return derived key bytes or PSKs to the browser. Passwords are not
+logged or persisted in browser storage.
+
+Demo flow:
+
+1. Enter a short plaintext, a PSK, and a carrier topic; optionally adjust
+   temperature and top-k.
+2. Select **Run complete sender** and inspect the resulting cryptographic,
+   mapping, position, embedding, and carrier outputs.
+3. **Deliver carrier text to receiver** copies only the carrier into the
+   editable receiver field. Enter the same PSK and run receiver extraction.
+4. The receiver derives its own keys and positions. Plaintext appears only
+   after AES-256-GCM authentication succeeds. Editing the carrier or using a
+   different PSK demonstrates extraction/authentication failure.
+
+The UI execution log records stage outcomes only. Its public-channel panel
+contains carrier text; salt, nonce, and mapped length are separate local demo
+metadata used by the receiver, not embedded into the carrier. ECDHE remains
+available in the terminal TCP workflow documented below.
 
 ## Project Structure
 
