@@ -23,13 +23,14 @@ Phase 1 is the core implementation stage and includes the essential research con
 Run the following commands in PowerShell from the repository directory:
 
 ```powershell
-cd "C:\Users\mrwhi\Downloads\temp\sdp"
+cd "C:\Users\MY PC\llm-shield\project"
 .\.venv\Scripts\python.exe -m app.web_server
 ```
 
-Open **http://127.0.0.1:8765**. The server binds to localhost only. If the
-virtual environment has not been created, follow the setup steps above before
-starting the UI. The project requirements are installed with:
+Keep that PowerShell window open while using the UI. In your browser's address
+bar, open **http://127.0.0.1:8765** (do not search for the URL). The server
+binds to localhost only. If the virtual environment has not been created, use
+the setup steps below first. Install the project requirements with:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
@@ -60,6 +61,46 @@ The UI execution log records stage outcomes only. Its public-channel panel
 contains carrier text; salt, nonce, and mapped length are separate local demo
 metadata used by the receiver, not embedded into the carrier. ECDHE remains
 available in the terminal TCP workflow documented below.
+
+Sender intermediate outputs stream into the pipeline panel as each stage
+finishes. Cryptography, payload, mapping, and target-position results appear
+while the LLM embedding stage is still running. The embedding card reports
+candidate generation, retries, and each character only after it passes
+per-character verification; the carrier and verification outputs appear when
+generation and sender-side checks complete.
+
+### Step-by-step UI run
+
+1. Open PowerShell and change to the project folder:
+   ```powershell
+   cd "C:\Users\MY PC\llm-shield\project"
+   ```
+2. If `.venv` does not exist yet, create it:
+   ```powershell
+   python -m venv .venv
+   ```
+3. Install dependencies (once, or after updating `requirements.txt`):
+   ```powershell
+   .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+   ```
+4. Start the UI server:
+   ```powershell
+   .\.venv\Scripts\python.exe -m app.web_server
+   ```
+   Leave this terminal running. If port `8765` is already in use, stop the
+   other demo server or start this one on another port, for example:
+   `.\.venv\Scripts\python.exe -m app.web_server --port 8766`.
+5. Open **http://127.0.0.1:8765** in the browser address bar (use `8766` if
+   you chose that port).
+6. Enter a short message, a pre-shared password, and a carrier topic, then
+   select **Run complete sender**. The first run may take several minutes
+   while the configured model downloads or initializes. Intermediate stage
+   outputs appear as the sender runs.
+7. After the sender succeeds, select **Deliver carrier text to receiver**.
+   Enter the same password in **Receiver PSK**, then select
+   **Run receiver pipeline**. A successful run displays authenticated
+   plaintext.
+8. When finished, press **Ctrl+C** in the PowerShell window to stop the server.
 
 ## Project Structure
 

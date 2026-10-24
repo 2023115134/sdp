@@ -104,6 +104,58 @@ def test_embedder_only_appends_final_tail_after_embedded_position():
     assert result.story.endswith(".") or result.story.endswith("!") or result.story.endswith("?")
 
 
+def test_progress_callback_marks_character_embedded_after_validation(monkeypatch):
+    embedder = EmbedderLLM()
+
+    def embed_one_character(self, story, character, position, **kwargs):
+        return story.ljust(position, " ") + character
+
+    monkeypatch.setattr(EmbedderLLM, "_embed_one_character", embed_one_character)
+    progress = []
+    result = embedder.embed(
+        topic="quiet garden",
+        characters="AB",
+        positions=[1, 2],
+        initial_story="x",
+        max_new_tokens=4,
+        progress_callback=lambda completed, total, status: progress.append(
+            (completed, total, status)
+        ),
+    )
+
+    assert result.embedded_characters == "AB"
+    assert progress == [
+        (0, 2, "embedding"),
+        (1, 2, "embedded"),
+        (1, 2, "embedding"),
+        (2, 2, "embedded"),
+    ]
+
+
+def test_progress_callback_does_not_report_invalid_character_as_embedded(monkeypatch):
+    embedder = EmbedderLLM()
+    monkeypatch.setattr(
+        EmbedderLLM,
+        "_embed_one_character",
+        lambda self, story, character, position, **kwargs: story.ljust(position, " ") + "Z",
+    )
+    progress = []
+
+    with pytest.raises(RuntimeError, match="Embedding validation failed"):
+        embedder.embed(
+            topic="quiet garden",
+            characters="A",
+            positions=[1],
+            initial_story="x",
+            max_new_tokens=4,
+            progress_callback=lambda completed, total, status: progress.append(
+                (completed, total, status)
+            ),
+        )
+
+    assert progress == [(0, 1, "embedding")]
+
+
 def test_normal_candidate_prefers_fresh_text_and_rejects_repetitive_only_option():
     embedder = EmbedderLLM()
     repeated = _FakeCandidate(" story", probability=0.99)

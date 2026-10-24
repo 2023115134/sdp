@@ -10,6 +10,34 @@ const receiverOutput = document.getElementById("receiver-stage-output");
 const logList = document.getElementById("execution-log");
 let sessionMetadata = null;
 
+function setBusy(busy) {
+  senderButton.disabled = busy;
+  resetButton.disabled = busy;
+  deliverButton.disabled = busy || !sessionMetadata;
+  receiverButton.disabled = busy || !sessionMetadata;
+}
+
+function clearPipelineResults() {
+  senderOutput.replaceChildren();
+  senderOutput.className = "stage-grid";
+  const senderEmpty = document.createElement("div");
+  senderEmpty.className = "empty-state";
+  senderEmpty.textContent = "Sender stages will appear here after a successful run.";
+  senderOutput.append(senderEmpty);
+
+  receiverOutput.replaceChildren();
+  receiverOutput.className = "receiver-results empty-state";
+  receiverOutput.textContent = "Receiver results will appear here. Plaintext is shown only after successful AES-GCM authentication.";
+  receivedCarrier.value = "";
+  document.getElementById("carrier-empty").classList.remove("hidden");
+  document.getElementById("carrier-result").classList.add("hidden");
+  carrierText.textContent = "";
+  document.getElementById("carrier-length").textContent = "0";
+  document.getElementById("channel-status").textContent = "Waiting for sender output.";
+  document.getElementById("receiver-status").textContent = "Waiting for carrier delivery.";
+  document.getElementById("receiver-status").className = "receiver-status pending";
+}
+
 const senderStageTitles = {
   key_establishment: "A · Key establishment",
   pbkdf2: "B · PBKDF2 key derivation",
@@ -21,6 +49,7 @@ const senderStageTitles = {
   carrier: "H · Final carrier",
   sender_verification: "Sender-side extraction and verification",
 };
+const senderStageOrder = Object.keys(senderStageTitles);
 
 const receiverStageTitles = {
   key_derivation: "J · Receiver key derivation",
@@ -72,6 +101,10 @@ const senderFields = {
     ["Position key", "key_source"],
   ],
   embedding: [
+    ["Progress", "message"],
+    ["Current stage", "current_stage"],
+    ["Characters embedded", "completed_characters"],
+    ["Total characters", "total_characters"],
     ["Topic", "topic"],
     ["Model", "model"],
     ["Temperature", "temperature"],
@@ -84,13 +117,14 @@ const senderFields = {
   ],
   carrier: [
     ["Length", "length", "characters"],
+    ["Generated carrier text", "text"],
     ["Embedding verification", "verified"],
     ["Caution", "notice"],
   ],
   sender_verification: [
     ["Extracted characters", "extracted"],
     ["AES-GCM authentication", "authentication"],
-    ["Recovered plaintext", "recovered_plaintext"],
+    ["Verification detail", "message"],
   ],
 };
 
@@ -233,6 +267,61 @@ function renderStages(target, stages, titles, fields) {
   }
 }
 
+function updateSenderStage(name, data) {
+  const index = senderStageOrder.indexOf(name);
+  if (index === -1) return;
+
+  const existingEmpty = senderOutput.querySelector(".empty-state");
+  if (existingEmpty) existingEmpty.remove();
+  const card = createStageCard(
+    senderStageTitles[name],
+    data,
+    senderFields[name] || [],
+  );
+  card.dataset.outputStage = name;
+  const existing = senderOutput.querySelector(`[data-output-stage="${name}"]`);
+  if (existing) {
+    existing.replaceWith(card);
+  } else {
+    const nextCard = [...senderOutput.children].find(
+      (child) => senderStageOrder.indexOf(child.dataset.outputStage) > index,
+    );
+    senderOutput.insertBefore(card, nextCard || null);
+  }
+
+  const pipelineStep = {
+    key_establishment: "key_establishment",
+    pbkdf2: "pbkdf2",
+    encryption: "encryption",
+    payload: "payload",
+    mapping: "mapping",
+    positions: "positions",
+    embedding: "embedding",
+    carrier: "carrier",
+  }[name];
+  if (pipelineStep) setPipelineStage(pipelineStep, data.status);
+  if (name === "embedding" && data.status === "running" && data.current_character) {
+    const current = data.current_character;
+    const total = data.total_characters || data.mapped_character_count;
+    const status = data.current_stage === "Character embedded"
+      ? `Embedded ${current}/${total}`
+      : `Generating ${current}/${total}`;
+    setOverallStatus(status, "running");
+  }
+  if (name === "sender_verification" && data.status === "success") {
+    for (const step of ["extraction", "inverse_mapping", "authentication", "plaintext"]) {
+      setPipelineStage(step, "success");
+    }
+  }
+  if (name === "carrier" && data.status === "success") {
+    document.getElementById("carrier-empty").classList.add("hidden");
+    document.getElementById("carrier-result").classList.remove("hidden");
+    carrierText.textContent = data.text;
+    document.getElementById("carrier-length").textContent = String(data.length);
+    document.getElementById("channel-status").textContent = "Carrier generated. Sender verification is finishing.";
+  }
+}
+
 async function copyText(text, button) {
   try {
     await navigator.clipboard.writeText(text);
@@ -247,11 +336,11 @@ async function copyText(text, button) {
 
 function showSenderResult(data) {
   sessionMetadata = data.session;
-  renderStages(senderOutput, data.stages, senderStageTitles, senderFields);
-  document.getElementById("carrier-empty").classList.add("hidden");
-  document.getElementById("carrier-result").classList.remove("hidden");
-  carrierText.textContent = data.stages.carrier.text;
-  document.getElementById("carrier-length").textContent = String(data.stages.carrier.length);
+  for (const [name, stage] of Object.entries(data.stages)) {
+    if (!senderOutput.querySelector(`[data-output-stage="${name}"]`)) {
+      updateSenderStage(name, stage);
+    }
+  }
   deliverButton.disabled = false;
   receiverButton.disabled = false;
   document.getElementById("channel-status").textContent = "Carrier generated. Deliver it when ready.";
@@ -266,26 +355,9 @@ function showSenderResult(data) {
 function resetDemo() {
   senderForm.reset();
   document.getElementById("receiver-password").value = "";
-  receivedCarrier.value = "";
   sessionMetadata = null;
-  senderOutput.replaceChildren();
-  senderOutput.className = "stage-grid";
-  const empty = document.createElement("div");
-  empty.className = "empty-state";
-  empty.textContent = "Sender stages will appear here after a successful run.";
-  senderOutput.append(empty);
-  receiverOutput.replaceChildren();
-  receiverOutput.className = "receiver-results empty-state";
-  receiverOutput.textContent = "Receiver results will appear here. Plaintext is shown only after successful AES-GCM authentication.";
-  document.getElementById("carrier-empty").classList.remove("hidden");
-  document.getElementById("carrier-result").classList.add("hidden");
-  carrierText.textContent = "";
-  document.getElementById("carrier-length").textContent = "0";
-  deliverButton.disabled = true;
-  receiverButton.disabled = true;
-  document.getElementById("channel-status").textContent = "Waiting for sender output.";
-  document.getElementById("receiver-status").textContent = "Waiting for carrier delivery.";
-  document.getElementById("receiver-status").className = "receiver-status pending";
+  clearPipelineResults();
+  setBusy(false);
   resetPipeline();
   logList.replaceChildren();
   addLog("Demo reset. No password or key material was retained.");
@@ -307,10 +379,62 @@ async function postJson(url, payload) {
   return data;
 }
 
+async function postSenderStream(payload) {
+  const response = await fetch("/api/sender/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    cache: "no-store",
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok || !response.body) {
+    let errorData = null;
+    try {
+      errorData = await response.json();
+    } catch {
+      // Keep the transport error when the server did not return JSON.
+    }
+    const failure = new Error(errorData && errorData.error || "The sender request failed.");
+    failure.stage = errorData && errorData.stage;
+    throw failure;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let completed = null;
+  const consumeLine = (line) => {
+    if (!line.trim()) return;
+    const event = JSON.parse(line);
+    if (event.type === "stage") {
+      updateSenderStage(event.key, event.data);
+    } else if (event.type === "error") {
+      const error = new Error(event.error || "The sender request failed.");
+      error.stage = event.stage;
+      throw error;
+    } else if (event.type === "complete") {
+      completed = event.data;
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const lines = buffer.split("\n");
+    buffer = lines.pop();
+    for (const line of lines) consumeLine(line);
+    if (done) break;
+  }
+  if (buffer.trim()) consumeLine(buffer);
+  if (!completed) throw new Error("The sender stream ended before completion.");
+  return completed;
+}
+
 senderForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!senderForm.reportValidity()) return;
-  senderButton.disabled = true;
+  sessionMetadata = null;
+  clearPipelineResults();
+  setBusy(true);
   senderButton.querySelector("span").textContent = "Running real sender pipeline…";
   resetPipeline();
   setOverallStatus("Sender running", "running");
@@ -318,7 +442,7 @@ senderForm.addEventListener("submit", async (event) => {
   document.getElementById("channel-status").textContent = "Waiting for real LLM generation to finish.";
   addLog("Sender pipeline started. Password and plaintext are not written to the execution log.");
   try {
-    const data = await postJson("/api/sender", {
+    const data = await postSenderStream({
       message: document.getElementById("secret-message").value,
       password: document.getElementById("sender-password").value,
       topic: document.getElementById("topic").value,
@@ -329,6 +453,10 @@ senderForm.addEventListener("submit", async (event) => {
     setOverallStatus("Sender verified · ready to deliver", "success");
     addLog("Sender completed: encryption, real embedding, extraction, and AEAD verification succeeded.");
   } catch (error) {
+    const failedStage = error.stage === "verification" ? "sender_verification" : error.stage;
+    if (failedStage && senderStageTitles[failedStage]) {
+      updateSenderStage(failedStage, { status: "failed", message: error.message });
+    }
     const progressStep = {
       cryptography: "encryption",
       embedding: "embedding",
@@ -340,7 +468,7 @@ senderForm.addEventListener("submit", async (event) => {
     addLog(`Sender failed at ${error.stage || "pipeline"} stage: ${error.message}`);
   } finally {
     document.getElementById("sender-password").value = "";
-    senderButton.disabled = false;
+    setBusy(false);
     senderButton.querySelector("span").textContent = "Run complete sender";
   }
 });
@@ -364,7 +492,7 @@ receiverButton.addEventListener("click", async () => {
     document.getElementById("receiver-status").textContent = "Enter the receiver PSK.";
     return;
   }
-  receiverButton.disabled = true;
+  setBusy(true);
   receiverButton.textContent = "Running receiver pipeline…";
   document.getElementById("receiver-status").textContent = "Regenerating positions and verifying the extracted payload…";
   document.getElementById("receiver-status").className = "receiver-status pending";
@@ -427,7 +555,7 @@ receiverButton.addEventListener("click", async () => {
     addLog(`Receiver failed at ${error.stage || "input"} stage: ${error.message}`);
   } finally {
     document.getElementById("receiver-password").value = "";
-    receiverButton.disabled = false;
+    setBusy(false);
     receiverButton.innerHTML = 'Run receiver pipeline <span aria-hidden="true">→</span>';
   }
 });

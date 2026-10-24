@@ -44,12 +44,15 @@ class DemoRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlsplit(self.path).path
-        if path not in {"/api/sender", "/api/receiver"}:
+        if path not in {"/api/sender", "/api/sender/stream", "/api/receiver"}:
             self._send_json(404, {"error": "Not found."})
             return
 
         try:
             payload = self._read_json()
+            if path == "/api/sender/stream":
+                self._stream_sender(payload)
+                return
             if path == "/api/sender":
                 response = run_sender(
                     message=payload.get("message"),
@@ -84,6 +87,46 @@ class DemoRequestHandler(BaseHTTPRequestHandler):
             return
 
         self._send_json(200, response)
+
+    def _stream_sender(self, payload: dict[str, object]) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
+        def send_event(event: dict[str, object]) -> None:
+            body = json.dumps(event, ensure_ascii=False).encode("utf-8") + b"\n"
+            self.wfile.write(body)
+            self.wfile.flush()
+
+        try:
+            response = run_sender(
+                message=payload.get("message"),
+                password=payload.get("password"),
+                topic=payload.get("topic"),
+                temperature=payload.get("temperature", 0.7),
+                top_k=payload.get("top_k", 20),
+                on_stage=lambda key, data: send_event(
+                    {"type": "stage", "key": key, "data": data}
+                ),
+            )
+            send_event({"type": "complete", "data": response})
+        except DemoPipelineError as error:
+            send_event({"type": "error", "error": str(error), "stage": error.stage})
+        except Exception as error:
+            logger.error("Streaming demo request failed (%s).", type(error).__name__)
+            send_event(
+                {
+                    "type": "error",
+                    "error": (
+                        "The demo pipeline failed unexpectedly. "
+                        "See the server output for details."
+                    ),
+                }
+            )
 
     def _read_json(self) -> dict[str, object]:
         content_length = self.headers.get("Content-Length")

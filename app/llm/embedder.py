@@ -2010,9 +2010,6 @@ class EmbedderLLM:
                         flush=True,
                     )
             total_attempt_counter[0] += character_attempt_counter[0]
-            self._progress_completed = index + 1
-            if progress_callback is not None:
-                progress_callback(index + 1, len(characters), "embedded")
 
             # Immediate verification.
             if (
@@ -2031,6 +2028,9 @@ class EmbedderLLM:
                     f"Embedding validation failed at "
                     f"position {position}."
                 )
+            self._progress_completed = index + 1
+            if progress_callback is not None:
+                progress_callback(index + 1, len(characters), "embedded")
             if verbose:
                 print("------------------------------------------------------------", flush=True)
 

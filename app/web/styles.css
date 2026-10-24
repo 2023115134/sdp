@@ -147,6 +147,7 @@ input::placeholder, textarea::placeholder { color: #a7b0bc; }
 .stage-state.success { background: var(--green-pale); color: var(--green); }
 .stage-state.failed { background: var(--red-pale); color: var(--red); }
 .stage-state.pending { background: #eff1f4; color: #6d7888; }
+.stage-state.running { background: var(--blue-pale); color: var(--blue); }
 .stage-copy { margin: -3px 0 10px; color: var(--muted); font-size: 11px; }
 .stage-fields { display: grid; gap: 7px; }
 .stage-field { min-width: 0; }

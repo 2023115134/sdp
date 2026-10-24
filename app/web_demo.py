@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from app.config import DEFAULT_PBKDF2_CONFIG, get_pbkdf2_iterations, get_model_name
 from app.crypto.aead import AEADError, decrypt, encrypt
@@ -49,6 +49,7 @@ def run_sender(
     topic: object,
     temperature: object = 0.7,
     top_k: object = 20,
+    on_stage: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Run the real PSK sender, embedder, extraction, and verification path."""
 
@@ -80,6 +81,77 @@ def run_sender(
     except (TypeError, ValueError, OverflowError) as error:
         raise DemoPipelineError("cryptography", "Key derivation or encryption failed.") from error
 
+    stages: dict[str, dict[str, Any]] = {
+        "key_establishment": {
+            "status": "success",
+            "mode": "PSK",
+            "explanation": (
+                "The sender derives keys from the entered pre-shared password. "
+                "The receiver independently derives matching keys; successful AEAD authentication verifies them."
+            ),
+        },
+        "pbkdf2": {
+            "status": "success",
+            "algorithm": f"PBKDF2-HMAC-{DEFAULT_PBKDF2_CONFIG.hash_name.upper()}",
+            "iterations": get_pbkdf2_iterations(),
+            "salt_hex": salt.hex(),
+            "derived_key_length": DEFAULT_PBKDF2_CONFIG.key_length,
+            "dk1_length": len(dk1),
+            "dk2_length": len(dk2),
+            "explanation": "DK1 is the AES-256-GCM key; DK2 regenerates SHAKE-128 positions.",
+        },
+        "encryption": {
+            "status": "success",
+            "plaintext": message,
+            "algorithm": "AES-256-GCM",
+            "nonce_hex": encrypted["nonce"].hex(),
+            "aad_hex": associated_data.hex(),
+            "ciphertext_hex": encrypted["ciphertext"].hex(),
+            "tag_hex": encrypted["tag"].hex(),
+            "ciphertext_length": len(encrypted["ciphertext"]),
+            "tag_length": len(encrypted["tag"]),
+        },
+        "payload": {
+            "status": "success",
+            "order": "tag || ciphertext",
+            "hex": encrypted["enc"].hex(),
+            "byte_length": len(encrypted["enc"]),
+            "hex_character_length": len(encrypted["enc"].hex()),
+        },
+        "mapping": {
+            "status": "success",
+            "input_hex": encrypted["enc"].hex(),
+            "output": mapped,
+            "input_byte_length": len(encrypted["enc"]),
+            "output_character_length": len(mapped),
+            "explanation": "The project maps each payload byte to two h4 alphabet characters.",
+        },
+        "positions": {
+            "status": "success",
+            "algorithm": "SHAKE-128",
+            "count": len(positions),
+            "positions": positions,
+            "rows": _embedding_rows(mapped, positions),
+            "key_source": "DK2 (not displayed)",
+        },
+    }
+    if on_stage is not None:
+        for name, data in stages.items():
+            on_stage(name, data)
+
+    stages["embedding"] = {
+        "status": "running",
+        "topic": topic,
+        "model": get_model_name(),
+        "temperature": float(temperature),
+        "top_k": top_k,
+        "mapped_character_count": len(mapped),
+        "current_stage": "Loading model",
+        "message": "Loading the configured model and initializing the embedder.",
+    }
+    if on_stage is not None:
+        on_stage("embedding", stages["embedding"])
+
     try:
         from server_a import _safe_initial_story
         from app.llm.embedder import EmbedderLLM
@@ -87,6 +159,44 @@ def run_sender(
 
         generator = LLMGenerator()
         embedder = EmbedderLLM(llm_generator=generator)
+
+        def report_embedding_progress(completed: int, total: int, status: str) -> None:
+            if status == "embedded":
+                current_character = completed
+                current_stage = "Character embedded"
+                message = f"Embedded character {completed}/{total} successfully."
+            elif status == "embedding":
+                current_character = completed + 1
+                current_stage = "Generating candidate"
+                message = (
+                    f"Generating candidate for character "
+                    f"{current_character}/{total}."
+                )
+            else:
+                current_character = completed + 1
+                current_stage = "Retrying candidate generation"
+                message = (
+                    f"{status.capitalize()} for character "
+                    f"{current_character}/{total}; generating another candidate."
+                )
+
+            stats = getattr(embedder, "_embedding_stats", {})
+            progress = {
+                **stages["embedding"],
+                "status": "running",
+                "current_stage": current_stage,
+                "current_character": current_character,
+                "completed_characters": completed,
+                "total_characters": total,
+                "message": message,
+                "llm_calls": stats.get("llm_calls"),
+                "candidate_evaluations": stats.get("candidate_evaluations"),
+                "retries": stats.get("retries"),
+            }
+            stages["embedding"] = progress
+            if on_stage is not None:
+                on_stage("embedding", progress)
+
         result = embedder.embed(
             topic=topic,
             characters=mapped,
@@ -99,6 +209,7 @@ def run_sender(
             max_retries=12,
             allow_adaptive_positions=False,
             verbose=False,
+            progress_callback=report_embedding_progress,
         )
     except (ImportError, OSError, RuntimeError, ValueError, MemoryError) as error:
         raise DemoPipelineError(
@@ -137,6 +248,35 @@ def run_sender(
         raise DemoPipelineError("verification", "Recovered bytes did not match the original message.")
 
     stats = getattr(embedder, "_embedding_stats", {})
+    stages["embedding"] = {
+        **stages["embedding"],
+        "status": "success",
+        "model": str(generator.model_name),
+        "target_positions": actual_positions,
+        "attempts": result.attempts,
+        "llm_calls": stats.get("llm_calls"),
+        "candidate_evaluations": stats.get("candidate_evaluations"),
+        "retries": stats.get("retries"),
+    }
+    stages["carrier"] = {
+        "status": "success",
+        "text": result.story,
+        "length": len(result.story),
+        "verified": embedded_ok,
+        "notice": (
+            "Carrier text is intended to conceal an encrypted payload in generated text; "
+            "this does not guarantee undetectability."
+        ),
+    }
+    stages["sender_verification"] = {
+        "status": "success",
+        "extracted": extracted,
+        "authentication": "success",
+    }
+    if on_stage is not None:
+        for name in ("embedding", "carrier", "sender_verification"):
+            on_stage(name, stages[name])
+
     return {
         "mode": "PSK",
         "model": str(generator.model_name),
@@ -145,89 +285,7 @@ def run_sender(
             "nonce_hex": encrypted["nonce"].hex(),
             "mapped_length": len(mapped),
         },
-        "stages": {
-            "key_establishment": {
-                "status": "success",
-                "mode": "PSK",
-                "explanation": (
-                    "The sender derives keys from the entered pre-shared password. "
-                    "The receiver independently derives matching keys; successful AEAD authentication verifies them."
-                ),
-            },
-            "pbkdf2": {
-                "status": "success",
-                "algorithm": f"PBKDF2-HMAC-{DEFAULT_PBKDF2_CONFIG.hash_name.upper()}",
-                "iterations": get_pbkdf2_iterations(),
-                "salt_hex": salt.hex(),
-                "derived_key_length": DEFAULT_PBKDF2_CONFIG.key_length,
-                "dk1_length": len(dk1),
-                "dk2_length": len(dk2),
-                "explanation": "DK1 is the AES-256-GCM key; DK2 regenerates SHAKE-128 positions.",
-            },
-            "encryption": {
-                "status": "success",
-                "plaintext": message,
-                "algorithm": "AES-256-GCM",
-                "nonce_hex": encrypted["nonce"].hex(),
-                "aad_hex": associated_data.hex(),
-                "ciphertext_hex": encrypted["ciphertext"].hex(),
-                "tag_hex": encrypted["tag"].hex(),
-                "ciphertext_length": len(encrypted["ciphertext"]),
-                "tag_length": len(encrypted["tag"]),
-            },
-            "payload": {
-                "status": "success",
-                "order": "tag || ciphertext",
-                "hex": encrypted["enc"].hex(),
-                "byte_length": len(encrypted["enc"]),
-                "hex_character_length": len(encrypted["enc"].hex()),
-            },
-            "mapping": {
-                "status": "success",
-                "input_hex": encrypted["enc"].hex(),
-                "output": mapped,
-                "input_byte_length": len(encrypted["enc"]),
-                "output_character_length": len(mapped),
-                "explanation": "The project maps each payload byte to two h4 alphabet characters.",
-            },
-            "positions": {
-                "status": "success",
-                "algorithm": "SHAKE-128",
-                "count": len(positions),
-                "positions": actual_positions,
-                "rows": _embedding_rows(mapped, actual_positions),
-                "key_source": "DK2 (not displayed)",
-            },
-            "embedding": {
-                "status": "success",
-                "topic": topic,
-                "model": str(generator.model_name),
-                "temperature": float(temperature),
-                "top_k": top_k,
-                "mapped_character_count": len(mapped),
-                "target_positions": actual_positions,
-                "attempts": result.attempts,
-                "llm_calls": stats.get("llm_calls"),
-                "candidate_evaluations": stats.get("candidate_evaluations"),
-                "retries": stats.get("retries"),
-            },
-            "carrier": {
-                "status": "success",
-                "text": result.story,
-                "length": len(result.story),
-                "verified": embedded_ok,
-                "notice": (
-                    "Carrier text is intended to conceal an encrypted payload in generated text; "
-                    "this does not guarantee undetectability."
-                ),
-            },
-            "sender_verification": {
-                "status": "success",
-                "extracted": extracted,
-                "authentication": "success",
-                "recovered_plaintext": recovered_plaintext.decode("utf-8"),
-            },
-        },
+        "stages": stages,
     }
 
 
