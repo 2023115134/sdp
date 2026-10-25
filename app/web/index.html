@@ -3,184 +3,193 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#101b2c">
+  <meta name="theme-color" content="#f5f7fa">
   <title>LLM-SHIELD | Communication Demo</title>
   <link rel="stylesheet" href="/static/styles.css">
   <script src="/static/app.js" defer></script>
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="#" aria-label="LLM-SHIELD dashboard">
-      <span class="brand-mark" aria-hidden="true">S</span>
-      <span><strong>LLM-SHIELD</strong><small>Research demonstration</small></span>
+    <a class="brand" href="#" aria-label="LLM-SHIELD home">
+      <span><strong>LLM-SHIELD</strong><small>Local research demonstration</small></span>
     </a>
     <div class="topbar-meta">
-      <span class="local-indicator"><i></i> LOCAL SESSION</span>
+      <span class="local-indicator"><i aria-hidden="true"></i> Local session</span>
       <span id="model-label" class="model-label">Loading model configuration…</span>
     </div>
   </header>
 
   <main>
-    <section class="hero">
-      <div class="hero-copy">
-        <p class="eyebrow">PHASE 1 · END-TO-END PROTOTYPE</p>
-        <h1>Secure communication,<br><em>made observable.</em></h1>
-        <p class="hero-description">Explore PSK or a backend X25519 ECDHE handshake with the same AES-GCM, h4 mapping, LLM-based carrier generation, and authenticated plaintext recovery pipeline.</p>
-      </div>
-      <div class="hero-note">
-        <span class="note-icon" aria-hidden="true">i</span>
-        <p><strong>Research prototype</strong><br>This local demo is for inspection and education. A carrier is not guaranteed to be undetectable or suitable for production security.</p>
-      </div>
+    <section class="intro" aria-labelledby="page-title">
+      <h1 id="page-title">Secure communication demo</h1>
+      <p>Send an encrypted message through an LLM-generated carrier, then extract and authenticate it in the receiver.</p>
     </section>
 
-    <section class="overview-grid" aria-label="Protocol overview">
-      <article class="overview-card">
-        <span class="card-index">01 / MODE</span>
-        <strong id="mode-overview">PSK</strong>
-        <p id="mode-overview-detail">Pre-shared password</p>
-      </article>
-      <article class="overview-card">
-        <span class="card-index">02 / KEY DERIVATION</span>
-        <strong id="kdf-label">PBKDF2-HMAC-SHA256</strong>
-        <p id="kdf-iterations">Loading configuration…</p>
-      </article>
-      <article class="overview-card">
-        <span class="card-index">03 / PROTECTION</span>
-        <strong>AES-256-GCM</strong>
-        <p>Authenticated encryption · 16-byte tag</p>
-      </article>
-      <article class="overview-card">
-        <span class="card-index">04 / POSITIONING</span>
-        <strong>SHAKE-128</strong>
-        <p>Deterministic targets derived from DK2</p>
-      </article>
-    </section>
-
-    <section class="pipeline-section">
+    <section class="panel" id="sender" aria-labelledby="sender-heading">
       <div class="section-heading">
-        <div><p class="eyebrow">EXECUTION MAP</p><h2>Pipeline progress</h2></div>
-        <span id="overall-status" class="status-badge pending">Waiting for input</span>
-      </div>
-      <ol class="pipeline-track" id="pipeline-track">
-        <li data-step="key_establishment"><span>01</span><b>Key establishment</b><small id="key-mode-step">PSK</small></li>
-        <li data-step="pbkdf2"><span>02</span><b>PBKDF2</b><small>DK1 + DK2</small></li>
-        <li data-step="encryption"><span>03</span><b>AES-GCM</b><small>Encrypt</small></li>
-        <li data-step="payload"><span>04</span><b>Payload</b><small>tag || ciphertext</small></li>
-        <li data-step="mapping"><span>05</span><b>h4 mapping</b><small>Reversible</small></li>
-        <li data-step="positions"><span>06</span><b>SHAKE-128</b><small>Target positions</small></li>
-        <li data-step="embedding"><span>07</span><b>EmbedderLLM</b><small>Real model</small></li>
-        <li data-step="carrier"><span>08</span><b>Carrier</b><small>Public text</small></li>
-        <li data-step="extraction"><span>09</span><b>Extraction</b><small>Receiver</small></li>
-        <li data-step="inverse_mapping"><span>10</span><b>Inverse map</b><small>Recover bytes</small></li>
-        <li data-step="authentication"><span>11</span><b>AEAD verify</b><small>Authenticate</small></li>
-        <li data-step="plaintext"><span>12</span><b>Plaintext</b><small>After verification</small></li>
-      </ol>
-    </section>
-
-    <div class="workspace-grid">
-      <section class="panel sender-panel" id="sender">
-        <div class="panel-heading">
-          <div><p class="eyebrow">01 · SENDER</p><h2>Prepare a message</h2></div>
-          <span class="mode-pill" id="mode-pill">PSK MODE</span>
+        <div>
+          <p class="section-number">01</p>
+          <h2 id="sender-heading">Sender</h2>
         </div>
-        <form id="sender-form">
+        <span id="mode-pill" class="mode-label">PSK mode</span>
+      </div>
+      <form id="sender-form">
+        <div class="field">
           <label for="key-mode">Key-establishment mode</label>
           <select id="key-mode" name="mode">
             <option value="PSK">PSK · pre-shared password</option>
             <option value="ECDHE">ECDHE · ephemeral X25519</option>
           </select>
           <p id="mode-explanation" class="field-help">Sender and receiver independently derive keys from the same pre-shared password.</p>
-          <label for="secret-message">Secret plaintext</label>
+        </div>
+        <div class="field">
+          <label for="secret-message">Secret message</label>
           <textarea id="secret-message" name="message" rows="3" maxlength="4000" required placeholder="Enter a short message for the demonstration"></textarea>
-          <div class="form-row">
-            <div id="sender-password-field">
-              <label for="sender-password">Sender PSK</label>
-              <input id="sender-password" name="password" type="password" autocomplete="new-password" required>
+        </div>
+        <div class="form-row">
+          <div id="sender-password-field" class="field">
+            <label for="sender-password">Sender PSK</label>
+            <input id="sender-password" name="password" type="password" autocomplete="new-password" required>
+          </div>
+          <div class="field">
+            <label for="topic">Carrier topic</label>
+            <input id="topic" name="topic" type="text" maxlength="160" required placeholder="A quiet walk through a garden">
+          </div>
+        </div>
+        <details class="settings">
+          <summary>Generation settings</summary>
+          <div class="form-row settings-row">
+            <div class="field">
+              <label for="temperature">Temperature</label>
+              <input id="temperature" name="temperature" type="number" min="0.01" max="0.9" step="0.01" value="0.7">
             </div>
-            <div>
-              <label for="topic">Carrier topic</label>
-              <input id="topic" name="topic" type="text" maxlength="160" required placeholder="A quiet walk through a garden">
+            <div class="field">
+              <label for="top-k">Top-k</label>
+              <input id="top-k" name="top_k" type="number" min="1" max="100" step="1" value="20">
             </div>
           </div>
-          <details class="settings">
-            <summary>Generation settings <span>Real EmbedderLLM parameters</span></summary>
-            <div class="form-row settings-row">
-              <div><label for="temperature">Temperature</label><input id="temperature" name="temperature" type="number" min="0.01" max="0.9" step="0.01" value="0.7"></div>
-              <div><label for="top-k">Top-k</label><input id="top-k" name="top_k" type="number" min="1" max="100" step="1" value="20"></div>
-            </div>
-          </details>
-          <div class="form-actions">
-            <button class="button button-primary" id="run-sender" type="submit"><span>Run complete sender</span><span aria-hidden="true">→</span></button>
-            <button class="button button-quiet" id="reset-demo" type="button">Reset</button>
-          </div>
-        </form>
-        <p class="privacy-note"><span aria-hidden="true">◇</span> Passwords and key bytes are never shown, logged by this UI, or stored in browser storage.</p>
-      </section>
+        </details>
+        <div class="form-actions">
+          <button class="button button-primary" id="run-sender" type="submit"><span>Run sender</span><span aria-hidden="true">→</span></button>
+          <button class="button button-secondary" id="reset-demo" type="button">Reset</button>
+        </div>
+      </form>
+      <p class="privacy-note">Passwords and key bytes are not shown or stored in browser storage.</p>
+    </section>
 
-      <section class="panel connection-panel">
-        <div class="panel-heading">
-          <div><p class="eyebrow">02 · PUBLIC CHANNEL</p><h2>Carrier text channel</h2></div>
-          <span class="channel-mark"><i></i> OPEN TEXT</span>
+    <section class="panel progress-panel" id="embedding-progress" aria-labelledby="progress-heading">
+      <div class="section-heading">
+        <div>
+          <p class="section-number">02</p>
+          <h2 id="progress-heading">Embedding Progress</h2>
         </div>
-        <p class="panel-intro">Only the generated carrier is presented as channel content. Local session metadata and PSKs are not part of this carrier-text panel.</p>
-        <div class="carrier-empty" id="carrier-empty">
-          <span class="empty-glyph" aria-hidden="true">···</span>
-          <p>Run the sender to generate a carrier.</p>
-        </div>
-        <div id="carrier-result" class="hidden">
-          <div class="output-toolbar"><span>GENERATED CARRIER · <b id="carrier-length">0</b> CHARACTERS</span><div><button class="text-button" id="copy-carrier" type="button">Copy</button><button class="text-button" id="download-carrier" type="button">Download</button></div></div>
-          <pre class="carrier-text" id="carrier-text"></pre>
-        </div>
-        <button class="button button-deliver" id="deliver-carrier" type="button" disabled>Deliver carrier text to receiver <span aria-hidden="true">↓</span></button>
-        <p id="channel-status" class="inline-status" aria-live="polite">Waiting for sender output.</p>
-      </section>
-    </div>
-
-    <section class="panel outputs-panel" id="sender-outputs">
-      <div class="panel-heading">
-        <div><p class="eyebrow">03 · SENDER PIPELINE</p><h2>Intermediate outputs</h2></div>
-        <span class="muted-label">Values are from the real project modules</span>
+        <span id="overall-status" class="status-label pending" role="status" aria-live="polite">Waiting for input</span>
       </div>
-      <div id="sender-stage-output" class="stage-grid">
-        <div class="empty-state">Sender stages will appear here after a successful run.</div>
+      <div class="progress-summary">
+        <div class="progress-heading">
+          <span id="embedding-progress-label">No embedding started</span>
+          <span id="embedding-count">0 / 0 characters</span>
+        </div>
+        <progress id="embedding-meter" max="1" value="0" aria-label="Characters embedded"></progress>
+        <dl class="progress-details">
+          <div><dt>Current character</dt><dd id="embedding-character">—</dd></div>
+          <div><dt>Target position</dt><dd id="embedding-position">—</dd></div>
+          <div><dt>Retry</dt><dd id="embedding-retry">—</dd></div>
+        </dl>
+        <p id="embedding-error" class="embedding-error hidden" role="alert"></p>
+      </div>
+
+      <details class="pipeline-details">
+        <summary>Pipeline stages</summary>
+        <ol class="pipeline-track" id="pipeline-track">
+          <li data-step="key_establishment"><span>01</span><b>Key establishment</b><small id="key-mode-step">PSK</small></li>
+          <li data-step="pbkdf2"><span>02</span><b>PBKDF2</b><small>DK1 + DK2</small></li>
+          <li data-step="encryption"><span>03</span><b>AES-GCM</b><small>Encrypt</small></li>
+          <li data-step="payload"><span>04</span><b>Payload</b><small>tag || ciphertext</small></li>
+          <li data-step="mapping"><span>05</span><b>h4 mapping</b><small>Reversible</small></li>
+          <li data-step="positions"><span>06</span><b>SHAKE-128</b><small>Target positions</small></li>
+          <li data-step="embedding"><span>07</span><b>EmbedderLLM</b><small>Model generation</small></li>
+          <li data-step="carrier"><span>08</span><b>Carrier</b><small>Text output</small></li>
+          <li data-step="extraction"><span>09</span><b>Extraction</b><small>Receiver</small></li>
+          <li data-step="inverse_mapping"><span>10</span><b>Inverse map</b><small>Recover bytes</small></li>
+          <li data-step="authentication"><span>11</span><b>AEAD verify</b><small>Authenticate</small></li>
+          <li data-step="plaintext"><span>12</span><b>Plaintext</b><small>After verification</small></li>
+        </ol>
+      </details>
+
+      <details class="stage-details">
+        <summary>Pipeline output details</summary>
+        <p class="help-text">Values are returned by the project pipeline. Plaintext is shown by the receiver only after authentication.</p>
+        <div id="sender-stage-output" class="stage-grid">
+          <div class="empty-state">Sender stages will appear here when the pipeline runs.</div>
+        </div>
+      </details>
+    </section>
+
+    <section class="panel" id="carrier-section" aria-labelledby="carrier-heading">
+      <div class="section-heading">
+        <div>
+          <p class="section-number">03</p>
+          <h2 id="carrier-heading">Carrier Text</h2>
+        </div>
+        <span class="quiet-label">Public text channel</span>
+      </div>
+      <p class="help-text">The generated carrier is presented separately from local session metadata.</p>
+      <div class="carrier-empty" id="carrier-empty">Run the sender to generate carrier text.</div>
+      <div id="carrier-result" class="hidden">
+        <div class="output-toolbar">
+          <span><b id="carrier-length">0</b> characters</span>
+          <div>
+            <button class="text-button" id="copy-carrier" type="button">Copy</button>
+            <button class="text-button" id="download-carrier" type="button">Download</button>
+          </div>
+        </div>
+        <pre class="carrier-text" id="carrier-text"></pre>
+      </div>
+      <div class="carrier-actions">
+        <button class="button button-secondary" id="deliver-carrier" type="button" disabled>Deliver text to receiver</button>
+        <p id="channel-status" class="inline-status" aria-live="polite">Waiting for sender output.</p>
       </div>
     </section>
 
-    <section class="panel receiver-panel" id="receiver">
-      <div class="panel-heading">
-        <div><p class="eyebrow">04 · RECEIVER</p><h2>Extract and verify</h2></div>
-        <span class="mode-pill">INDEPENDENT DERIVATION</span>
+    <section class="panel receiver-panel" id="receiver" aria-labelledby="receiver-heading">
+      <div class="section-heading">
+        <div>
+          <p class="section-number">04</p>
+          <h2 id="receiver-heading">Receiver</h2>
+        </div>
+        <span class="quiet-label">Independent key derivation</span>
       </div>
       <div class="receiver-grid">
-        <div>
-          <label for="received-carrier">Received carrier text <span class="label-hint">Editable for tamper / invalid-carrier tests</span></label>
-          <textarea id="received-carrier" rows="8" placeholder="Delivered carrier text appears here. You can also paste carrier text to test extraction."></textarea>
+        <div class="field">
+          <label for="received-carrier">Received carrier text <span class="label-hint">Editable for tamper tests</span></label>
+          <textarea id="received-carrier" rows="7" placeholder="Delivered carrier text appears here. You can also paste carrier text to test extraction."></textarea>
         </div>
         <div class="receiver-controls">
-          <div id="receiver-password-field">
+          <div id="receiver-password-field" class="field">
             <label for="receiver-password">Receiver PSK</label>
             <input id="receiver-password" type="password" autocomplete="new-password" required>
           </div>
-          <p id="receiver-key-help" class="field-help">Enter the same password used by the sender. The receiver re-derives its own keys; no key bytes are transferred.</p>
-          <button class="button button-primary" id="run-receiver" type="button" disabled>Run receiver pipeline <span aria-hidden="true">→</span></button>
-          <div id="receiver-status" class="receiver-status pending" aria-live="polite">Waiting for carrier delivery.</div>
+          <p id="receiver-key-help" class="field-help">Enter the sender password. The receiver derives its own keys; no key bytes are transferred.</p>
+          <button class="button button-primary" id="run-receiver" type="button" disabled>Run receiver</button>
+          <div id="receiver-status" class="receiver-status pending" role="status" aria-live="polite">Waiting for carrier delivery.</div>
         </div>
       </div>
-      <div id="receiver-stage-output" class="receiver-results empty-state">Receiver results will appear here. Plaintext is shown only after successful AES-GCM authentication.</div>
+      <div id="receiver-stage-output" class="receiver-results empty-state">Receiver extraction and authentication results will appear here. Plaintext is shown only after successful AES-GCM authentication.</div>
     </section>
 
-    <section class="panel logs-panel">
-      <div class="panel-heading">
-        <div><p class="eyebrow">05 · OBSERVABILITY</p><h2>Execution log</h2></div>
-        <span class="muted-label">No passwords or key material are recorded</span>
-      </div>
-      <ol id="execution-log" class="execution-log"><li><time>READY</time><span>Local interface initialized. No pipeline has run.</span></li></ol>
-    </section>
-
-    <section class="notice-box">
-      <span class="note-icon" aria-hidden="true">!</span>
-      <div><strong>ECDHE web mode is a single-computer demonstration.</strong><p>The backend creates separate logical sender and receiver endpoints and performs a real X25519 exchange in-process. The public keys are not peer-authenticated, so this does not protect against a man-in-the-middle attack and is not a two-computer protocol. It uses no sender password or TCP carrier-bootstrap secret. Existing TCP ECDHE remains separate.</p></div>
-    </section>
+    <details class="session-details">
+      <summary>Session log and protocol notes</summary>
+      <section class="session-section">
+        <h2>Execution log</h2>
+        <p class="help-text">Passwords and key material are not recorded.</p>
+        <ol id="execution-log" class="execution-log"><li><time>READY</time><span>Local interface initialized. No pipeline has run.</span></li></ol>
+      </section>
+      <section class="notice-box">
+        <h2>ECDHE demonstration note</h2>
+        <p>The backend creates separate logical sender and receiver endpoints and performs a real X25519 exchange in-process. Public keys are not peer-authenticated, so this local demonstration is not a two-computer protocol and does not protect against a man-in-the-middle attack. It uses no sender password or TCP carrier-bootstrap secret. Existing TCP ECDHE remains separate.</p>
+      </section>
+    </details>
   </main>
 
   <footer><span>LLM-SHIELD · Local research demo</span><span>127.0.0.1 · No browser persistence</span></footer>

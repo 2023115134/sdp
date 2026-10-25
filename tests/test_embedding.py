@@ -157,6 +157,136 @@ def test_progress_callback_does_not_report_invalid_character_as_embedded(monkeyp
     assert progress == [(0, 1, "embedding")]
 
 
+def test_long_embedding_rejects_candidate_that_crosses_next_position(monkeypatch):
+    class LongPayloadGenerator:
+        def __init__(self):
+            self.calls = 0
+
+        def get_next_token_candidates(self, prompt, top_k, temperature):
+            self.calls += 1
+            if self.calls == 1:
+                return [
+                    _FakeCandidate("X" + ("Y" * 63), probability=0.9),
+                    _FakeCandidate("X", probability=0.8),
+                ]
+            return [_FakeCandidate("X"), _FakeCandidate(" ")]
+
+    def select_matching_candidate(
+        self,
+        story,
+        candidates,
+        character,
+        position,
+        topic,
+        continuation_candidates=None,
+    ):
+        for candidate in candidates:
+            new_story = story + candidate.token
+            if len(new_story) <= position:
+                if continuation_candidates is not None:
+                    continuation_candidates.append(candidate)
+                continue
+            if (
+                position < len(new_story)
+                and self._character_matches(new_story[position], character)
+            ):
+                return 1.0, candidate, 1.0
+        return None
+
+    embedder = EmbedderLLM(llm_generator=LongPayloadGenerator())
+    monkeypatch.setattr(
+        EmbedderLLM, "_select_embedding_candidate", select_matching_candidate
+    )
+    monkeypatch.setattr(
+        EmbedderLLM,
+        "_select_normal_candidate",
+        lambda self, story, candidates, topic: next(
+            candidate for candidate in candidates if candidate.token == " "
+        ),
+    )
+    monkeypatch.setattr(
+        EmbedderLLM, "_complete_cover_text", lambda self, story, topic, max_tokens: story
+    )
+    monkeypatch.setattr(
+        EmbedderLLM,
+        "_validate_cover_naturalness",
+        lambda self, story, topic: {"test": True},
+    )
+
+    result = embedder.embed(
+        topic="a long carrier",
+        characters="X" * 70,
+        positions=[1 + 32 * index for index in range(70)],
+        initial_story="s",
+        verbose=False,
+    )
+
+    assert result.embedded_characters == "X" * 70
+    assert all(result.story[position] == "X" for position in result.positions)
+    assert len(result.positions) == 70
+
+
+def test_failure_after_many_embedded_characters_reports_exact_position(monkeypatch):
+    class FailingAfterManyCharactersGenerator:
+        def __init__(self):
+            self.calls = 0
+
+        def get_next_token_candidates(self, prompt, top_k, temperature):
+            self.calls += 1
+            if self.calls <= 60:
+                return [_FakeCandidate("X")]
+            return []
+
+    def select_matching_candidate(
+        self,
+        story,
+        candidates,
+        character,
+        position,
+        topic,
+        continuation_candidates=None,
+    ):
+        for candidate in candidates:
+            new_story = story + candidate.token
+            if (
+                position < len(new_story)
+                and self._character_matches(new_story[position], character)
+            ):
+                return 1.0, candidate, 1.0
+        return None
+
+    embedder = EmbedderLLM(llm_generator=FailingAfterManyCharactersGenerator())
+    monkeypatch.setattr(
+        EmbedderLLM, "_select_embedding_candidate", select_matching_candidate
+    )
+    progress = []
+    events = []
+
+    with pytest.raises(
+        RuntimeError,
+        match="Unable to embed character 'X' at position 61",
+    ):
+        embedder.embed(
+            topic="a long carrier",
+            characters="X" * 61,
+            positions=list(range(1, 62)),
+            initial_story="s",
+            verbose=False,
+            progress_callback=lambda completed, total, status: progress.append(
+                (completed, total, status)
+            ),
+            progress_event_callback=events.append,
+        )
+
+    failures = [event for event in events if event.get("event") == "character_failed"]
+    assert len(failures) == 1
+    assert failures[0]["index"] == 61
+    assert failures[0]["position"] == 61
+    assert (60, 61, "embedded") in progress
+    assert (60, 61, "embedding") in progress
+    assert (61, 61, "embedded") not in progress
+
+
 def test_detailed_progress_callback_logs_real_character_retry_and_candidate_events(
     monkeypatch, capsys
 ):

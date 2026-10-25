@@ -262,9 +262,12 @@ def test_sender_emits_retry_progress_without_reporting_completion(monkeypatch):
         )
 
     updates = [data for name, data in emitted if name == "embedding"]
-    assert updates[-1]["current_stage"] == "Retrying candidate generation"
-    assert "Retry 1/12 for character 1/" in updates[-1]["message"]
+    assert updates[-2]["current_stage"] == "Retrying candidate generation"
+    assert "Retry 1/12 for character 1/" in updates[-2]["message"]
     assert all(update.get("completed_characters", 0) == 0 for update in updates)
+    assert updates[-1]["status"] == "failed"
+    assert updates[-1]["current_character"] == 1
+    assert updates[-1]["completed_characters"] == 0
     assert not any(data.get("status") == "success" for data in updates)
 
 
@@ -306,6 +309,64 @@ def test_sender_logs_embedding_traceback_without_exposing_details_to_caller(
     assert "specific invalid embedding condition" in caplog.text
     assert "Traceback (most recent call last)" in caplog.text
     assert "never logged" not in caplog.text
+
+
+def test_sender_reports_failure_position_after_many_embedded_characters(
+    monkeypatch, caplog
+):
+    from app.llm import embedder as embedder_module
+    from app.llm import generator as generator_module
+
+    class FakeGenerator:
+        model_name = "test-model"
+
+    class FailedAfterManyCharacters:
+        def __init__(self, llm_generator):
+            self._embedding_stats = {
+                "llm_calls": 0,
+                "candidate_evaluations": 0,
+                "retries": 0,
+            }
+
+        def embed(self, *, characters, progress_callback, **kwargs):
+            for completed in range(60):
+                progress_callback(completed, len(characters), "embedding")
+                progress_callback(completed + 1, len(characters), "embedded")
+            progress_callback(60, len(characters), "embedding")
+            raise RuntimeError("simulated fixed-position candidate exhaustion")
+
+    monkeypatch.setattr(generator_module, "LLMGenerator", FakeGenerator)
+    monkeypatch.setattr(
+        embedder_module, "EmbedderLLM", FailedAfterManyCharacters
+    )
+    caplog.set_level("ERROR", logger="app.web_demo.embedding")
+    emitted = []
+
+    with pytest.raises(DemoPipelineError) as raised:
+        run_sender(
+            message="long test payload " * 3,
+            password="must-not-appear",
+            topic="A quiet garden",
+            on_stage=lambda name, data: emitted.append((name, data)),
+        )
+
+    stages = [data for name, data in emitted if name == "embedding"]
+    failed_stage = next(stage for stage in stages if stage["status"] == "failed")
+    positions = next(
+        data["positions"] for name, data in emitted if name == "positions"
+    )
+    assert failed_stage["current_character"] == 61
+    assert failed_stage["completed_characters"] == 60
+    assert failed_stage["failed_position"] == positions[60]
+    assert f"character 61/{failed_stage['total_characters']}" in str(raised.value)
+    assert f"position {positions[60]}" in str(raised.value)
+    assert not any(
+        name in {"carrier", "sender_verification"} and data["status"] == "success"
+        for name, data in emitted
+    )
+    assert "Traceback (most recent call last)" in caplog.text
+    assert "simulated fixed-position candidate exhaustion" in caplog.text
+    assert "must-not-appear" not in caplog.text
 
 
 def test_receiver_authentication_failure_never_returns_plaintext(fake_embedder):

@@ -635,6 +635,8 @@ def run_sender(
         generator = LLMGenerator()
         embedder = EmbedderLLM(llm_generator=generator)
 
+        current_embedding_event: dict[str, object] = {}
+
         def report_embedding_progress(completed: int, total: int, status: str) -> None:
             if status == "embedded":
                 current_character = completed
@@ -658,6 +660,12 @@ def run_sender(
             stats = getattr(embedder, "_embedding_stats", {})
             progress = {
                 **stages["embedding"],
+                **(
+                    current_embedding_event
+                    if current_embedding_event.get("current_character")
+                    == current_character
+                    else {}
+                ),
                 "status": "running",
                 "current_stage": current_stage,
                 "current_character": current_character,
@@ -674,6 +682,90 @@ def run_sender(
 
         def report_embedding_event(event: dict[str, object]) -> None:
             _log_embedding_progress(event)
+            event_type = event.get("event")
+            if event_type not in {
+                "character_started",
+                "retry_started",
+                "candidate_rejected",
+                "character_embedded",
+                "character_failed",
+            }:
+                return
+
+            index = event.get("index")
+            total = event.get("total")
+            position = event.get("position")
+            character = event.get("character")
+            completed = (
+                index
+                if event_type == "character_embedded"
+                else index - 1
+                if isinstance(index, int)
+                else 0
+            )
+            if event_type == "character_started":
+                current_stage = "Generating candidate"
+                message = f"Generating candidate for character {index}/{total}."
+            elif event_type == "retry_started":
+                current_stage = "Retrying candidate generation"
+                message = (
+                    f"Retry {event.get('retry_number')}/{event.get('retry_limit')} "
+                    f"for character {index}/{total} at position {position}."
+                )
+            elif event_type == "candidate_rejected":
+                current_stage = "Retrying candidate generation"
+                message = (
+                    f"Candidate rejected for character {index}/{total} at "
+                    f"position {position}: {event.get('reason')}"
+                )
+            elif event_type == "character_embedded":
+                current_stage = "Character embedded"
+                message = f"Embedded character {index}/{total} at position {position}."
+            else:
+                current_stage = "Embedding failed"
+                message = (
+                    f"Failed to embed character {index}/{total} at position "
+                    f"{position}: {event.get('reason')}"
+                )
+
+            progress = {
+                **stages["embedding"],
+                "status": (
+                    "failed" if event_type == "character_failed" else "running"
+                ),
+                "current_stage": current_stage,
+                "current_character": index,
+                "current_character_value": character,
+                "target_position": position,
+                "completed_characters": completed,
+                "total_characters": total,
+                "retry_number": event.get("retry_number"),
+                "retry_limit": event.get("retry_limit"),
+                "temperature": event.get("temperature"),
+                "top_k": event.get("top_k"),
+                "message": message,
+                "llm_calls": getattr(embedder, "_embedding_stats", {}).get(
+                    "llm_calls"
+                ),
+                "candidate_evaluations": getattr(
+                    embedder, "_embedding_stats", {}
+                ).get("candidate_evaluations"),
+                "retries": getattr(embedder, "_embedding_stats", {}).get(
+                    "retries"
+                ),
+            }
+            if event_type == "candidate_rejected":
+                progress["last_rejection"] = event.get("reason")
+            elif event_type == "character_failed":
+                progress["error"] = event.get("reason")
+            else:
+                progress.pop("last_rejection", None)
+                progress.pop("error", None)
+            current_embedding_event.clear()
+            current_embedding_event.update(progress)
+            stages["embedding"] = progress
+            if on_stage is not None:
+                on_stage("embedding", progress)
 
         weight_progress_hook = _install_transformers_weight_progress_hook(
             report_embedding_event
@@ -702,11 +794,51 @@ def run_sender(
                     _release_embedding_terminal_lock()
                 finally:
                     _restore_transformers_weight_progress_hook(weight_progress_hook)
-    except (ImportError, OSError, RuntimeError, ValueError, MemoryError) as error:
+    except Exception as error:
         embedding_logger.exception("Real LLM embedding failed in web sender.")
+        failed_character = None
+        failed_position = None
+        failed_completed = None
+        if stages["embedding"].get("current_stage") != "Character embedded":
+            current_character = stages["embedding"].get("current_character")
+            if (
+                isinstance(current_character, int)
+                and 1 <= current_character <= len(mapped)
+            ):
+                failed_character = current_character
+                failed_position = positions[current_character - 1]
+                failed_completed = current_character - 1
+
+        failure_message = "Real LLM embedding failed"
+        if failed_character is not None and failed_position is not None:
+            failure_message += (
+                f" at character {failed_character}/{len(mapped)}, "
+                f"position {failed_position}"
+            )
+        failure_message += (
+            f" ({type(error).__name__}). Check model availability and server output."
+        )
+        failed_progress = {
+            **stages["embedding"],
+            "status": "failed",
+            "current_stage": "Embedding failed",
+            "message": failure_message,
+        }
+        if failed_character is not None:
+            failed_progress.update(
+                {
+                    "current_character": failed_character,
+                    "completed_characters": failed_completed,
+                    "failed_position": failed_position,
+                    "total_characters": len(mapped),
+                }
+            )
+        stages["embedding"] = failed_progress
+        if on_stage is not None:
+            on_stage("embedding", failed_progress)
         raise DemoPipelineError(
             "embedding",
-            f"Real LLM embedding failed ({type(error).__name__}). Check model availability and server output.",
+            failure_message,
         ) from error
 
     actual_positions = result.positions

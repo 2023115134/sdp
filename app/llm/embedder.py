@@ -1342,9 +1342,19 @@ class EmbedderLLM:
         max_attempts: int,
         attempt_counter: list[int],
         retry_guidance: str = "",
+        next_position: int | None = None,
     ):
 
         self._last_failure_reason = "generation did not reach the target position"
+
+        def before_next_position(candidates):
+            if next_position is None:
+                return candidates
+            return [
+                candidate
+                for candidate in candidates
+                if len(story) + len(candidate.token) <= next_position
+            ]
 
         for _ in range(max_steps):
 
@@ -1393,10 +1403,11 @@ class EmbedderLLM:
             # ----------------------------------------------------------
 
             normal_candidates = []
+            eligible_candidates = before_next_position(candidates)
             if character == " ":
                 selected = self._select_space_candidate(
                     story=story,
-                    candidates=candidates,
+                    candidates=eligible_candidates,
                     position=position,
                     topic=topic,
                     continuation_candidates=normal_candidates,
@@ -1404,7 +1415,7 @@ class EmbedderLLM:
             else:
                 selected = self._select_embedding_candidate(
                     story=story,
-                    candidates=candidates,
+                    candidates=eligible_candidates,
                     character=character,
                     position=position,
                     topic=topic,
@@ -1448,17 +1459,20 @@ class EmbedderLLM:
                     )
                     return None
 
+                eligible_fallback_candidates = before_next_position(
+                    fallback_candidates
+                )
                 if character == " ":
                     selected = self._select_space_candidate(
                         story=story,
-                        candidates=fallback_candidates,
+                        candidates=eligible_fallback_candidates,
                         position=position,
                         topic=topic,
                     )
                 else:
                     selected = self._select_embedding_candidate(
                         story=story,
-                        candidates=fallback_candidates,
+                        candidates=eligible_fallback_candidates,
                         character=character,
                         position=position,
                         topic=topic,
@@ -1676,6 +1690,7 @@ class EmbedderLLM:
         max_steps: int,
         max_attempts: int,
         attempt_counter: list[int],
+        next_position: int | None = None,
     ):
         """
         Embed one required character at the fixed target position.
@@ -1776,6 +1791,7 @@ class EmbedderLLM:
                 max_attempts=max_attempts,
                 attempt_counter=attempt_counter,
                 retry_guidance=retry_guidance[(retry_number - 1) % len(retry_guidance)],
+                next_position=next_position,
             )
 
             if result is not None:
@@ -2017,10 +2033,24 @@ class EmbedderLLM:
             character_stats_start = dict(self._embedding_stats)
             # The current story must never already be beyond target.
             if len(story) > position:
-
+                reason = f"Story already crossed target position {position}."
+                if progress_event_callback is not None:
+                    progress_event_callback(
+                        {
+                            "event": "character_failed",
+                            "index": index + 1,
+                            "total": len(characters),
+                            "character": character,
+                            "position": position,
+                            "retry_number": 0,
+                            "retry_limit": max_retries,
+                            "candidate_evaluations": 0,
+                            "status": "failed",
+                            "reason": reason,
+                        }
+                    )
                 raise RuntimeError(
-                    f"Story already crossed target position "
-                    f"{position}."
+                    reason
                 )
 
             character_attempt_counter = [0]
@@ -2036,6 +2066,11 @@ class EmbedderLLM:
                     max_steps=max_new_tokens * 4,
                     max_attempts=max_attempts,
                     attempt_counter=character_attempt_counter,
+                    next_position=(
+                        positions[index + 1]
+                        if index + 1 < len(positions)
+                        else None
+                    ),
                 )
             except RuntimeError as exc:
                 if not allow_adaptive_positions:

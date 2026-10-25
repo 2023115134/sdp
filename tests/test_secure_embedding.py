@@ -29,7 +29,20 @@ def test_secure_embedding_round_trip_through_embedder(monkeypatch):
     assert len(mapped) == len(positions)
     assert len(enc) > 0
 
-    def fake_embed_one_character(self, story, character, position, topic, temperature, top_k, max_retries, max_steps, max_attempts, attempt_counter):
+    def fake_embed_one_character(
+        self,
+        story,
+        character,
+        position,
+        topic,
+        temperature,
+        top_k,
+        max_retries,
+        max_steps,
+        max_attempts,
+        attempt_counter,
+        next_position=None,
+    ):
         filler_len = max(0, position - len(story))
         if filler_len:
             story += " " * filler_len

@@ -12,6 +12,8 @@ const modeSelect = document.getElementById("key-mode");
 const senderPassword = document.getElementById("sender-password");
 const receiverPassword = document.getElementById("receiver-password");
 let sessionMetadata = null;
+let currentEmbeddingEvent = {};
+let lastEmbeddingProgress = {};
 
 function setBusy(busy) {
   senderButton.disabled = busy;
@@ -40,6 +42,9 @@ function clearPipelineResults() {
   document.getElementById("channel-status").textContent = "Waiting for sender output.";
   document.getElementById("receiver-status").textContent = "Waiting for carrier delivery.";
   document.getElementById("receiver-status").className = "receiver-status pending";
+  currentEmbeddingEvent = {};
+  lastEmbeddingProgress = {};
+  updateEmbeddingProgress({});
 }
 
 const senderStageTitles = {
@@ -133,6 +138,12 @@ const senderFields = {
     ["Current stage", "current_stage"],
     ["Characters embedded", "completed_characters"],
     ["Total characters", "total_characters"],
+    ["Current character", "current_character_value"],
+    ["Target position", "target_position"],
+    ["Retry", "retry_number"],
+    ["Retry limit", "retry_limit"],
+    ["Candidate rejection", "last_rejection"],
+    ["Error", "error"],
     ["Topic", "topic"],
     ["Model", "model"],
     ["Temperature", "temperature"],
@@ -193,7 +204,39 @@ function addLog(message) {
 function setOverallStatus(text, status) {
   const badge = document.getElementById("overall-status");
   badge.textContent = text;
-  badge.className = `status-badge ${status}`;
+  badge.className = `status-label ${status}`;
+}
+
+function updateEmbeddingProgress(data) {
+  const total = Number(data.total_characters ?? data.mapped_character_count ?? 0);
+  const completed = Number(data.completed_characters ?? 0);
+  const current = Number(data.current_character ?? 0);
+  const meter = document.getElementById("embedding-meter");
+  meter.max = Math.max(total, 1);
+  meter.value = Math.min(completed, total);
+  document.getElementById("embedding-count").textContent =
+    `${completed} / ${total} characters`;
+  document.getElementById("embedding-progress-label").textContent =
+    data.message || data.current_stage || "No embedding started";
+
+  const character = data.current_character_value;
+  document.getElementById("embedding-character").textContent = current
+    ? `${current}/${total}${character === undefined ? "" : ` · ${character === " " ? "SPACE" : character}`}`
+    : "—";
+  const position = data.target_position ?? data.failed_position;
+  document.getElementById("embedding-position").textContent =
+    position === undefined ? "—" : String(position);
+  const retry = data.retry_number === undefined
+    ? "—"
+    : `${data.retry_number}${data.retry_limit ? ` / ${data.retry_limit}` : ""}`
+      + (data.temperature === undefined ? "" : ` · T ${data.temperature}`)
+      + (data.top_k === undefined ? "" : ` · k ${data.top_k}`);
+  document.getElementById("embedding-retry").textContent = retry;
+
+  const error = document.getElementById("embedding-error");
+  const errorText = data.error || (data.status === "failed" ? data.message : "");
+  error.textContent = errorText || "";
+  error.classList.toggle("hidden", !errorText);
 }
 
 function setPipelineStage(name, status) {
@@ -208,6 +251,7 @@ function resetPipeline() {
     item.classList.remove("success", "failed", "running");
   });
   setOverallStatus("Waiting for input", "pending");
+  updateEmbeddingProgress({});
 }
 
 function appendField(container, label, value, copyable = false) {
@@ -298,6 +342,10 @@ function renderStages(target, stages, titles, fields) {
 function updateSenderStage(name, data) {
   const index = senderStageOrder.indexOf(name);
   if (index === -1) return;
+  if (name === "embedding") {
+    data = { ...lastEmbeddingProgress, ...data };
+    lastEmbeddingProgress = data;
+  }
 
   const existingEmpty = senderOutput.querySelector(".empty-state");
   if (existingEmpty) existingEmpty.remove();
@@ -332,6 +380,14 @@ function updateSenderStage(name, data) {
     carrier: "carrier",
   }[name];
   if (pipelineStep) setPipelineStage(pipelineStep, data.status);
+  if (name === "embedding") {
+    updateEmbeddingProgress(data);
+    if (data.status === "failed") {
+      setOverallStatus("Embedding failed", "failed");
+    } else if (data.status === "success") {
+      setOverallStatus("Embedding complete", "success");
+    }
+  }
   if (name.startsWith("ecdhe_") && data.status === "running") {
     setOverallStatus(data.message || "ECDHE handshake in progress", "running");
   }
@@ -402,10 +458,6 @@ function updateModeUI() {
     receiverPassword.value = "";
   }
   document.getElementById("mode-pill").textContent = `${modeSelect.value} MODE`;
-  document.getElementById("mode-overview").textContent = modeSelect.value;
-  document.getElementById("mode-overview-detail").textContent = ecdhe
-    ? "Ephemeral X25519 · local demo"
-    : "Pre-shared password";
   document.getElementById("key-mode-step").textContent = ecdhe
     ? "ECDHE · local handshake"
     : "PSK";
@@ -718,8 +770,6 @@ async function loadConfig() {
     if (!response.ok) throw new Error("Configuration request failed.");
     const config = await response.json();
     document.getElementById("model-label").textContent = config.model;
-    document.getElementById("kdf-label").textContent = config.pbkdf2_algorithm;
-    document.getElementById("kdf-iterations").textContent = `${Number(config.pbkdf2_iterations).toLocaleString()} iterations · ${config.dk_length} derived bytes`;
     document.getElementById("secret-message").maxLength = Math.floor(config.max_mapped_characters / 2) - 16;
   } catch {
     document.getElementById("model-label").textContent = "Backend configuration unavailable";
