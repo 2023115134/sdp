@@ -136,6 +136,18 @@ summary { width: fit-content; color: var(--blue); font-size: 12px; cursor: point
 .embedding-error { margin: 12px 0 0; padding: 8px 10px; border-left: 3px solid var(--red); background: var(--red-pale); color: #792c2c; font-size: 12px; }
 .hidden { display: none !important; }
 
+.ecdhe-carrier-list { display: grid; gap: 8px; margin: 14px 0 0; padding: 0; list-style: none; }
+.ecdhe-empty { padding: 12px; border: 1px dashed #cbd4df; color: var(--muted); font-size: 12px; }
+.ecdhe-round { min-width: 0; padding: 11px; border: 1px solid var(--line); background: #fff; }
+.ecdhe-round.failed { border-color: #e2bcbc; background: #fffafa; }
+.ecdhe-round-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.ecdhe-round-heading strong { color: var(--navy); font-size: 12px; font-weight: 650; }
+.ecdhe-round-meta { margin: 3px 0 8px; color: var(--muted); font-size: 11px; }
+.ecdhe-round-progress { margin: 0 0 8px; color: #344256; font: 10px/1.5 var(--mono); overflow-wrap: anywhere; }
+.ecdhe-carrier-label { display: block; margin-bottom: 4px; color: var(--subtle); font-size: 10px; font-weight: 600; }
+.ecdhe-carrier-text { max-height: 190px; overflow: auto; margin: 0; padding: 8px; border: 1px solid var(--line); background: #f7f8fa; color: #27364a; font: 11px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.ecdhe-round-error { margin: 8px 0 0; color: #792c2c; font-size: 11px; }
+
 .pipeline-details, .stage-details { margin-top: 14px; border-top: 1px solid var(--line); }
 .pipeline-details > summary, .stage-details > summary { padding-top: 12px; }
 .pipeline-track { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; margin: 12px 0 2px; padding: 0; border: 1px solid var(--line); list-style: none; }
@@ -211,6 +223,7 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 14px
   h1 { font-size: 21px; }
   .panel { padding: 16px; }
   .section-heading { align-items: flex-start; }
+  .ecdhe-round-heading { align-items: flex-start; flex-direction: column; gap: 3px; }
   .form-row, .receiver-grid, .stage-grid { grid-template-columns: 1fr; }
   .pipeline-track { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .progress-details { gap: 8px; }

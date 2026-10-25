@@ -17,6 +17,8 @@ def fake_embedder(monkeypatch):
         model_name = "test-model (explicitly mocked in test)"
 
     class FakeEmbedder:
+        topics = []
+
         def __init__(self, llm_generator):
             self._embedding_stats = {
                 "llm_calls": 0,
@@ -25,14 +27,36 @@ def fake_embedder(monkeypatch):
             }
 
         def embed(self, *, characters, positions, initial_story="", **kwargs):
+            self.topics.append(kwargs.get("topic"))
             progress_callback = kwargs.get("progress_callback")
+            progress_event_callback = kwargs.get("progress_event_callback")
             story = list(initial_story)
             if positions and len(story) <= positions[-1]:
                 story.extend(" " * (positions[-1] + 1 - len(story)))
             if progress_callback is not None:
                 progress_callback(0, len(characters), "embedding")
             for index, (character, position) in enumerate(zip(characters, positions)):
+                if progress_event_callback is not None:
+                    progress_event_callback(
+                        {
+                            "event": "character_started",
+                            "index": index + 1,
+                            "total": len(characters),
+                            "position": position,
+                            "character": character,
+                        }
+                    )
                 story[position] = character
+                if progress_event_callback is not None:
+                    progress_event_callback(
+                        {
+                            "event": "character_embedded",
+                            "index": index + 1,
+                            "total": len(characters),
+                            "position": position,
+                            "character": character,
+                        }
+                    )
                 if progress_callback is not None:
                     progress_callback(index + 1, len(characters), "embedded")
             return SimpleNamespace(
@@ -50,6 +74,7 @@ def fake_embedder(monkeypatch):
 
     monkeypatch.setattr(generator_module, "LLMGenerator", FakeGenerator)
     monkeypatch.setattr(embedder_module, "EmbedderLLM", FakeEmbedder)
+    return FakeEmbedder
 
 
 def _send_ecdhe_message(handshake, *, message="hello"):
@@ -78,7 +103,9 @@ def _receive_ecdhe_message(sender, *, carrier_text=None, **changes):
     return run_receiver(**metadata)
 
 
-def test_handshake_independently_derives_matching_shared_and_message_keys(monkeypatch):
+def test_handshake_independently_derives_matching_shared_and_message_keys(
+    monkeypatch, fake_embedder
+):
     shared_secrets = []
     derivations = []
     real_shared_secret = web_demo.derive_shared_secret
@@ -99,6 +126,7 @@ def test_handshake_independently_derives_matching_shared_and_message_keys(monkey
 
     events = []
     handshake = create_ecdhe_session(
+        topic="Selected carrier topic",
         on_stage=lambda name, data: events.append((name, data))
     )
 
@@ -112,8 +140,30 @@ def test_handshake_independently_derives_matching_shared_and_message_keys(monkey
         "ecdhe_key_pair_generation",
         "ecdhe_public_key_exchange",
         "ecdhe_shared_secret",
+        "ecdhe_key_confirmation",
         "ecdhe_key_derivation",
     ]
+    carrier_events = [data for name, data in events if name == "ecdhe_carrier"]
+    carrier_progress = [
+        data for name, data in events if name == "ecdhe_carrier_progress"
+    ]
+    assert len(carrier_events) == 4 * 10
+    assert [event["status"] for event in carrier_events] == [
+        status
+        for _ in range(10)
+        for status in ("generating", "delivered", "received", "verified")
+    ]
+    assert [event["round_number"] for event in carrier_events[::4]] == list(range(1, 11))
+    assert all(event["total_rounds"] == 10 for event in carrier_events)
+    assert carrier_progress
+    assert carrier_progress[0]["progress"]["current_character"] == 1
+    assert carrier_progress[0]["progress"]["target_position"] is not None
+    assert all(
+        event["carrier_text"]
+        for event in carrier_events
+        if event["status"] == "delivered"
+    )
+    assert fake_embedder.topics == ["Selected carrier topic"] * 10
     assert handshake["mode"] == "ECDHE"
     assert "private" not in str(handshake).lower()
     assert "shared_secret" not in str(handshake).lower()
@@ -227,3 +277,34 @@ def test_ecdhe_handshake_failure_is_reported_without_a_session(monkeypatch):
         "ecdhe_key_pair_generation",
         {"status": "failed", "message": "X25519 key-pair generation failed."},
     )
+
+
+def test_ecdhe_carrier_failure_after_several_successful_rounds_is_reported(
+    monkeypatch, fake_embedder
+):
+    real_embed = fake_embedder.embed
+    calls = 0
+
+    def fail_later(self, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 8:
+            raise RuntimeError("test-only carrier generation failure")
+        return real_embed(self, **kwargs)
+
+    monkeypatch.setattr(fake_embedder, "embed", fail_later)
+    events = []
+    sessions_before = set(web_demo._ecdhe_sessions)
+    with pytest.raises(DemoPipelineError, match="exchange 8/10"):
+        create_ecdhe_session(
+            topic="Test carrier topic",
+            on_stage=lambda name, data: events.append((name, data)),
+        )
+
+    carriers = [data for name, data in events if name == "ecdhe_carrier"]
+    assert [event["status"] for event in carriers[-1:]] == ["failed"]
+    assert carriers[-1]["round_number"] == 8
+    assert "RuntimeError" in carriers[-1]["error"]
+    assert len([event for event in carriers if event["status"] == "verified"]) == 7
+    assert set(web_demo._ecdhe_sessions) == sessions_before
+    assert "test-only carrier generation failure" not in carriers[-1]["error"]

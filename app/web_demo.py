@@ -1,9 +1,10 @@
-"""Backend orchestration for the local PSK demonstration UI."""
+"""Backend orchestration for the local PSK and ECDHE demonstration UI."""
 
 from __future__ import annotations
 
 import hmac
 import logging
+import os
 import secrets
 import threading
 import time
@@ -17,10 +18,19 @@ from app.crypto.aead_mapping import (
     character_sequence_to_aead,
 )
 from app.crypto.ecdhe import derive_ecdhe_keys, derive_shared_secret, generate_key_pair
+from app.crypto.ecdhe_carrier import (
+    PUBLIC_KEY_EXCHANGE_MESSAGE_COUNT,
+    assemble_public_key,
+    derive_carrier_position_keys,
+    embed_public_key_segment,
+    extract_public_key_segment,
+    split_public_key,
+)
 from app.crypto.key_derivation import derive_keys, generate_salt
 from app.extraction.extractor import Extractor
 from app.tcp_protocol import (
     MAX_MAPPED_CHARACTERS,
+    key_confirmation,
     payload_associated_data,
     positions_for_payload,
 )
@@ -68,11 +78,13 @@ def _emit_stage(
 
 
 def create_ecdhe_session(
+    topic: object = "A quiet garden",
     *,
     on_stage: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Perform a real, in-process X25519 handshake for two logical endpoints."""
 
+    topic = _require_text(topic, "Carrier topic")
     stage_name = "ecdhe_key_pair_generation"
     _emit_stage(
         on_stage,
@@ -115,15 +127,246 @@ def create_ecdhe_session(
         stage_name,
         {"status": "running", "message": "Exchanging public keys between local endpoints."},
     )
-    sender_peer_public = receiver_public
-    receiver_peer_public = sender_public
+    try:
+        from app.llm.embedder import EmbedderLLM
+        from app.llm.generator import LLMGenerator
+
+        generator = LLMGenerator()
+        embedder = EmbedderLLM(llm_generator=generator)
+        carrier_session_id = os.urandom(16)
+        carrier_dk1, carrier_dk2 = derive_carrier_position_keys(
+            os.environ.get("LLM_SHIELD_PREVIOUS_SHARED_SECRET", ""),
+            carrier_session_id,
+        )
+        sender_segments = split_public_key(sender_public)
+        receiver_segments = split_public_key(receiver_public)
+        sender_peer_segments: list[bytes] = []
+        receiver_peer_segments: list[bytes] = []
+        total_rounds = PUBLIC_KEY_EXCHANGE_MESSAGE_COUNT
+
+        for segment_index, (sender_segment, receiver_segment) in enumerate(
+            zip(sender_segments, receiver_segments)
+        ):
+            for participant, role, segment, position_key, expected_role, expected_key, peer_segments in (
+                (
+                    "Sender",
+                    "server_a",
+                    sender_segment,
+                    carrier_dk1,
+                    "server_a",
+                    carrier_dk1,
+                    receiver_peer_segments,
+                ),
+                (
+                    "Receiver",
+                    "server_b",
+                    receiver_segment,
+                    carrier_dk2,
+                    "server_b",
+                    carrier_dk2,
+                    sender_peer_segments,
+                ),
+            ):
+                round_number = segment_index * 2 + (1 if participant == "Sender" else 2)
+                event_data = {
+                    "round_number": round_number,
+                    "total_rounds": total_rounds,
+                    "participant": participant,
+                    "direction": f"{participant} → "
+                    f"{'Receiver' if participant == 'Sender' else 'Sender'}",
+                    "purpose": (
+                        f"Public-key transmission · segment "
+                        f"{segment_index + 1}/{len(sender_segments)}"
+                    ),
+                }
+                _emit_stage(
+                    on_stage,
+                    "ecdhe_carrier",
+                    {**event_data, "status": "generating"},
+                )
+
+                def report_carrier_progress(progress_event: dict[str, object]) -> None:
+                    event_type = progress_event.get("event")
+                    stage_names = {
+                        "character_started": "Generating candidate",
+                        "retry_started": "Retrying candidate generation",
+                        "candidate_rejected": "Retrying candidate generation",
+                        "character_embedded": "Character embedded",
+                        "character_failed": "Embedding failed",
+                    }
+                    if not isinstance(event_type, str) or event_type not in stage_names:
+                        return
+                    index = progress_event.get("index")
+                    total = progress_event.get("total")
+                    progress = {
+                        "event": event_type,
+                        "current_character": index,
+                        "total_characters": total,
+                        "completed_characters": (
+                            index
+                            if event_type == "character_embedded"
+                            else index - 1
+                            if isinstance(index, int)
+                            else 0
+                        ),
+                        "current_character_value": progress_event.get("character"),
+                        "target_position": progress_event.get("position"),
+                        "retry_number": progress_event.get("retry_number"),
+                        "retry_limit": progress_event.get("retry_limit"),
+                        "current_stage": stage_names[event_type],
+                    }
+                    if event_type == "candidate_rejected":
+                        progress["last_rejection"] = progress_event.get("reason")
+                    elif event_type == "character_failed":
+                        progress["error"] = progress_event.get("reason")
+                    _emit_stage(
+                        on_stage,
+                        "ecdhe_carrier_progress",
+                        {
+                            **event_data,
+                            "status": "generating",
+                            "progress": progress,
+                        },
+                    )
+
+                try:
+                    frame = embed_public_key_segment(
+                        segment,
+                        role=role,
+                        segment_index=segment_index,
+                        topic=topic,
+                        position_key=position_key,
+                        embedder=embedder,
+                        verbose=False,
+                        progress_event_callback=report_carrier_progress,
+                    )
+                except Exception as error:
+                    failure_message = (
+                        f"Carrier generation failed at exchange "
+                        f"{round_number}/{total_rounds} "
+                        f"({type(error).__name__})."
+                    )
+                    _emit_stage(
+                        on_stage,
+                        "ecdhe_carrier",
+                        {
+                            **event_data,
+                            "status": "failed",
+                            "error": failure_message,
+                        },
+                    )
+                    raise DemoPipelineError(
+                        "key_establishment", failure_message
+                    ) from error
+
+                cover_text = frame.get("cover_text")
+                _emit_stage(
+                    on_stage,
+                    "ecdhe_carrier",
+                    {
+                        **event_data,
+                        "status": "delivered",
+                        "carrier_text": cover_text,
+                    },
+                )
+                _emit_stage(
+                    on_stage,
+                    "ecdhe_carrier",
+                    {**event_data, "status": "received"},
+                )
+                try:
+                    received_segment = extract_public_key_segment(
+                        frame,
+                        expected_role=expected_role,
+                        expected_segment_index=segment_index,
+                        position_key=expected_key,
+                    )
+                except Exception as error:
+                    failure_message = (
+                        f"Carrier verification failed at exchange "
+                        f"{round_number}/{total_rounds} "
+                        f"({type(error).__name__})."
+                    )
+                    _emit_stage(
+                        on_stage,
+                        "ecdhe_carrier",
+                        {
+                            **event_data,
+                            "status": "failed",
+                            "carrier_text": cover_text,
+                            "error": failure_message,
+                        },
+                    )
+                    raise DemoPipelineError(
+                        "key_establishment", failure_message
+                    ) from error
+                if not hmac.compare_digest(received_segment, segment):
+                    failure_message = (
+                        f"Carrier verification failed at exchange "
+                        f"{round_number}/{total_rounds}."
+                    )
+                    _emit_stage(
+                        on_stage,
+                        "ecdhe_carrier",
+                        {
+                            **event_data,
+                            "status": "failed",
+                            "carrier_text": cover_text,
+                            "error": failure_message,
+                        },
+                    )
+                    raise DemoPipelineError(
+                        "key_establishment", failure_message
+                    )
+                peer_segments.append(received_segment)
+                _emit_stage(
+                    on_stage,
+                    "ecdhe_carrier",
+                    {
+                        **event_data,
+                        "status": "verified",
+                        "carrier_text": cover_text,
+                    },
+                )
+
+        sender_peer_public = assemble_public_key(sender_peer_segments)
+        receiver_peer_public = assemble_public_key(receiver_peer_segments)
+        if not (
+            hmac.compare_digest(sender_peer_public, receiver_public)
+            and hmac.compare_digest(receiver_peer_public, sender_public)
+        ):
+            raise DemoPipelineError(
+                "key_establishment",
+                "ECDHE public-key carrier exchange did not match the peer keys.",
+            )
+    except DemoPipelineError:
+        _emit_stage(
+            on_stage,
+            stage_name,
+            {"status": "failed", "message": "ECDHE public-key carrier exchange failed."},
+        )
+        raise
+    except Exception as error:
+        _emit_stage(
+            on_stage,
+            stage_name,
+            {"status": "failed", "message": "ECDHE public-key carrier exchange failed."},
+        )
+        raise DemoPipelineError(
+            "key_establishment",
+            f"ECDHE public-key carrier exchange failed ({type(error).__name__}).",
+        ) from error
     _emit_stage(
         on_stage,
         stage_name,
         {
             "status": "success",
-            "transport": "in-process local demonstration",
-            "message": "Each endpoint received the other endpoint's public key.",
+            "transport": "in-process public-key carriers",
+            "message": (
+                f"Both public keys were received and verified across "
+                f"{PUBLIC_KEY_EXCHANGE_MESSAGE_COUNT} carrier exchanges."
+            ),
+            "total_rounds": PUBLIC_KEY_EXCHANGE_MESSAGE_COUNT,
         },
     )
 
@@ -162,6 +405,49 @@ def create_ecdhe_session(
             "status": "success",
             "match": True,
             "message": "The independently calculated endpoint secrets match; secret bytes are not exposed.",
+        },
+    )
+
+    stage_name = "ecdhe_key_confirmation"
+    _emit_stage(
+        on_stage,
+        stage_name,
+        {
+            "status": "running",
+            "message": "Verifying role-separated X25519 key confirmations.",
+        },
+    )
+    sender_confirmation = key_confirmation(
+        sender_shared_secret, "server_a", sender_public, receiver_public
+    )
+    receiver_confirmation = key_confirmation(
+        receiver_shared_secret, "server_b", sender_public, receiver_public
+    )
+    sender_expected_confirmation = key_confirmation(
+        sender_shared_secret, "server_b", sender_public, receiver_public
+    )
+    receiver_expected_confirmation = key_confirmation(
+        receiver_shared_secret, "server_a", sender_public, receiver_public
+    )
+    confirmations_match = (
+        hmac.compare_digest(sender_confirmation, receiver_expected_confirmation)
+        and hmac.compare_digest(receiver_confirmation, sender_expected_confirmation)
+    )
+    if not confirmations_match:
+        _emit_stage(
+            on_stage,
+            stage_name,
+            {"status": "failed", "message": "ECDHE key confirmation failed."},
+        )
+        raise DemoPipelineError(
+            "key_establishment", "ECDHE key confirmation failed."
+        )
+    _emit_stage(
+        on_stage,
+        stage_name,
+        {
+            "status": "success",
+            "message": "Both endpoint key confirmations verified; confirmation values remain hidden.",
         },
     )
 

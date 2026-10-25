@@ -77,6 +77,21 @@
       <p class="privacy-note">Passwords and key bytes are not shown or stored in browser storage.</p>
     </section>
 
+    <section class="panel ecdhe-panel hidden" id="ecdhe-exchange" aria-labelledby="ecdhe-heading">
+      <div class="section-heading">
+        <div>
+          <p class="section-number">ECDHE</p>
+          <h2 id="ecdhe-heading">ECDHE Key Exchange</h2>
+        </div>
+        <span id="ecdhe-exchange-status" class="status-label pending" role="status" aria-live="polite">Waiting for ECDHE mode</span>
+      </div>
+      <p class="help-text">Intermediate carriers transmit public-key segments between the local Sender and Receiver endpoints. These are separate from the final encrypted-message carrier.</p>
+      <ol id="ecdhe-carrier-list" class="ecdhe-carrier-list" aria-live="polite" aria-relevant="additions text">
+        <li class="ecdhe-empty">ECDHE carrier exchanges will appear here when ECDHE mode is run.</li>
+      </ol>
+      <p id="ecdhe-handshake-error" class="embedding-error hidden" role="alert"></p>
+    </section>
+
     <section class="panel progress-panel" id="embedding-progress" aria-labelledby="progress-heading">
       <div class="section-heading">
         <div>
@@ -130,7 +145,7 @@
       <div class="section-heading">
         <div>
           <p class="section-number">03</p>
-          <h2 id="carrier-heading">Carrier Text</h2>
+          <h2 id="carrier-heading">Final Message Carrier</h2>
         </div>
         <span class="quiet-label">Public text channel</span>
       </div>
@@ -138,7 +153,7 @@
       <div class="carrier-empty" id="carrier-empty">Run the sender to generate carrier text.</div>
       <div id="carrier-result" class="hidden">
         <div class="output-toolbar">
-          <span><b id="carrier-length">0</b> characters</span>
+          <span><b id="carrier-length">0</b> characters · final message carrier</span>
           <div>
             <button class="text-button" id="copy-carrier" type="button">Copy</button>
             <button class="text-button" id="download-carrier" type="button">Download</button>

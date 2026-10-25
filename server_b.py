@@ -192,7 +192,7 @@ def receive_message(
             _print_section(2, "KEY ESTABLISHMENT")
             print(f"  Server A public key ({len(peer_public_key)} bytes): {peer_public_key.hex()}")
             print(f"  Server B public key ({len(public_key)} bytes): {public_key.hex()}")
-            print(f"  Server B shared secret ({len(shared_secret)} bytes): {shared_secret.hex()}")
+            print(f"  Shared-secret agreement: {len(shared_secret)} bytes")
             print("  TCP public-key exchange and peer confirmation: PASS")
             print("  X25519 shared-secret agreement: PASS")
             print("  Shared secrets match: PASS")
@@ -218,9 +218,7 @@ def receive_message(
         print(f"  Iterations   : {get_pbkdf2_iterations():,}")
         print(f"  Salt ({len(salt)} bytes): {salt.hex()}")
         print(f"  Derived output: {len(dk1) + len(dk2)} bytes")
-        print(f"  DK1           : {dk1.hex()}")
         print(f"  DK1 length   : {len(dk1)} bytes")
-        print(f"  DK2           : {dk2.hex()}")
         print(f"  DK2 length   : {len(dk2)} bytes")
         print("  Local derivation status: completed")
 

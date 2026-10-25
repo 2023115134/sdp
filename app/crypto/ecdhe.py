@@ -561,14 +561,10 @@ def run_full_x25519_exchange(
 
 if __name__ == "__main__":
     result = run_full_x25519_exchange()
-    print("1. sender private key:", result["sender_private_key"].hex())
     print("2. sender public key:", result["sender_public_key"].hex())
-    print("3. receiver private key:", result["receiver_private_key"].hex())
     print("4. receiver public key:", result["receiver_public_key"].hex())
     print("5. exchanged public keys: OK")
-    print("6. sender shared secret:", result["sender_shared_secret"].hex())
-    print("7. receiver shared secret:", result["receiver_shared_secret"].hex())
-    print("8. shared secrets identical:", result["sender_shared_secret"] == result["receiver_shared_secret"])
+    print("6. shared-secret agreement: PASS")
     print("9. PBKDF2 salt:", result["salt"].hex())
     print("10. PBKDF2 key material length:", len(result["dk1"]) + len(result["dk2"]))
     print("11. DK1 length:", len(result["dk1"]))

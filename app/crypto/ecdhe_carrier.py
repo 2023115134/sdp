@@ -88,6 +88,7 @@ def embed_public_key_segment(
     embedder: EmbedderLLM | None = None,
     verbose: bool = False,
     progress_callback: Callable[[int, int, str], None] | None = None,
+    progress_event_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> dict[str, object]:
     """Map and embed one public-key segment, returning its carrier frame fields."""
 
@@ -136,6 +137,7 @@ def embed_public_key_segment(
         allow_adaptive_positions=False,
         verbose=verbose,
         progress_callback=progress_callback,
+        progress_event_callback=progress_event_callback,
     )
     actual_positions = result.positions
     if (

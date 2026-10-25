@@ -64,7 +64,7 @@ class DemoRequestHandler(BaseHTTPRequestHandler):
         try:
             payload = self._read_json()
             if path == "/api/ecdhe/handshake/stream":
-                self._stream_ecdhe_handshake()
+                self._stream_ecdhe_handshake(payload)
                 return
             if path == "/api/sender/stream":
                 self._stream_sender(payload)
@@ -142,13 +142,14 @@ class DemoRequestHandler(BaseHTTPRequestHandler):
                 }
             )
 
-    def _stream_ecdhe_handshake(self) -> None:
+    def _stream_ecdhe_handshake(self, payload: dict[str, object]) -> None:
         self._start_event_stream()
         try:
             response = create_ecdhe_session(
+                topic=payload.get("topic", "A quiet garden"),
                 on_stage=lambda key, data: self._send_event(
                     {"type": "stage", "key": key, "data": data}
-                )
+                ),
             )
             self._send_event({"type": "complete", "data": response})
         except DemoPipelineError as error:

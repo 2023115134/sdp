@@ -14,6 +14,165 @@ const receiverPassword = document.getElementById("receiver-password");
 let sessionMetadata = null;
 let currentEmbeddingEvent = {};
 let lastEmbeddingProgress = {};
+let ecdheRounds = new Map();
+
+const ecdheStatusLabels = {
+  generating: "Generating",
+  delivered: "Delivered",
+  received: "Received",
+  verified: "Verified",
+  failed: "Failed",
+};
+
+function resetEcdheExchange() {
+  ecdheRounds.clear();
+  const list = document.getElementById("ecdhe-carrier-list");
+  list.replaceChildren();
+  const empty = document.createElement("li");
+  empty.className = "ecdhe-empty";
+  empty.textContent = modeSelect.value === "ECDHE"
+    ? "Waiting for the backend to begin the key exchange."
+    : "ECDHE carrier exchanges will appear here when ECDHE mode is run.";
+  list.append(empty);
+  const status = document.getElementById("ecdhe-exchange-status");
+  status.textContent = modeSelect.value === "ECDHE" ? "Ready" : "Waiting for ECDHE mode";
+  status.className = "status-label pending";
+  const error = document.getElementById("ecdhe-handshake-error");
+  error.textContent = "";
+  error.classList.add("hidden");
+}
+
+function setEcdheHandshakeFailure(message) {
+  const status = document.getElementById("ecdhe-exchange-status");
+  status.textContent = "Handshake failed";
+  status.className = "status-label failed";
+  const error = document.getElementById("ecdhe-handshake-error");
+  error.textContent = message;
+  error.classList.remove("hidden");
+}
+
+function updateEcdheCarrier(data) {
+  const round = { ...(ecdheRounds.get(data.round_number) || {}), ...data };
+  ecdheRounds.set(data.round_number, round);
+  const list = document.getElementById("ecdhe-carrier-list");
+  list.querySelector(".ecdhe-empty")?.remove();
+
+  const item = document.createElement("li");
+  item.className = `ecdhe-round ${round.status || "pending"}`;
+  item.dataset.roundNumber = String(round.round_number);
+  const heading = document.createElement("div");
+  heading.className = "ecdhe-round-heading";
+  const title = document.createElement("strong");
+  title.textContent = `Exchange ${round.round_number}/${round.total_rounds} · ${round.participant}`;
+  const status = document.createElement("span");
+  status.className = `stage-state ${round.status || "pending"}`;
+  status.textContent = ecdheStatusLabels[round.status] || "Pending";
+  heading.append(title, status);
+
+  const direction = document.createElement("p");
+  direction.className = "ecdhe-round-meta";
+  direction.textContent = `${round.direction || ""} · ${round.purpose || ""}`;
+  item.append(heading, direction);
+
+  if (round.progress) {
+    const progress = round.progress;
+    const details = document.createElement("p");
+    details.className = "ecdhe-round-progress";
+    const parts = [
+      `${progress.completed_characters}/${progress.total_characters} characters`,
+      progress.current_character === undefined
+        ? ""
+        : `character ${progress.current_character}${progress.current_character_value === undefined
+          ? ""
+          : ` · ${progress.current_character_value === " " ? "SPACE" : progress.current_character_value}`}`,
+      progress.target_position === undefined ? "" : `position ${progress.target_position}`,
+      progress.retry_number === undefined
+        ? ""
+        : `retry ${progress.retry_number}${progress.retry_limit ? `/${progress.retry_limit}` : ""}`,
+      progress.last_rejection ? `rejected: ${progress.last_rejection}` : "",
+      progress.error ? `error: ${progress.error}` : "",
+    ].filter(Boolean);
+    details.textContent = `${progress.current_stage || "Embedding"} · ${parts.join(" · ")}`;
+    item.append(details);
+  }
+
+  if (round.carrier_text !== undefined) {
+    const label = document.createElement("span");
+    label.className = "ecdhe-carrier-label";
+    label.textContent = `Outgoing carrier · ${round.direction || ""}`;
+    const text = document.createElement("pre");
+    text.className = "ecdhe-carrier-text";
+    text.textContent = round.carrier_text;
+    item.append(label, text);
+    if (["received", "verified"].includes(round.status)) {
+      const incomingLabel = document.createElement("span");
+      incomingLabel.className = "ecdhe-carrier-label";
+      const receiver = round.participant === "Sender" ? "Receiver" : "Sender";
+      incomingLabel.textContent = `Incoming carrier · received by ${receiver}`;
+      const incomingText = document.createElement("pre");
+      incomingText.className = "ecdhe-carrier-text";
+      incomingText.textContent = round.carrier_text;
+      item.append(incomingLabel, incomingText);
+    }
+  }
+  if (round.error) {
+    const error = document.createElement("p");
+    error.className = "ecdhe-round-error";
+    error.setAttribute("role", "alert");
+    error.textContent = round.error;
+    item.append(error);
+  }
+
+  const existing = list.querySelector(`[data-round-number="${round.round_number}"]`);
+  if (existing) existing.replaceWith(item);
+  else list.append(item);
+
+  const exchangeStatus = document.getElementById("ecdhe-exchange-status");
+  if (round.status === "failed") {
+    exchangeStatus.textContent = `Exchange ${round.round_number}/${round.total_rounds} failed`;
+    exchangeStatus.className = "status-label failed";
+    setEcdheHandshakeFailure(round.error || `Exchange ${round.round_number} failed.`);
+    return;
+  }
+  exchangeStatus.className = "status-label running";
+  if (round.status === "verified") {
+    const verified = [...ecdheRounds.values()].filter((entry) => entry.status === "verified").length;
+    exchangeStatus.textContent = `${verified}/${round.total_rounds} carriers verified`;
+  } else {
+    exchangeStatus.textContent = `Exchange ${round.round_number}/${round.total_rounds} · ${ecdheStatusLabels[round.status] || "Pending"}`;
+  }
+}
+
+function updateHandshakeStage(name, data) {
+  if (name === "ecdhe_carrier") {
+    updateEcdheCarrier(data);
+    return;
+  }
+  if (name === "ecdhe_carrier_progress") {
+    updateEcdheCarrier(data);
+    const progress = data.progress || {};
+    const message = `ECDHE exchange ${data.round_number}/${data.total_rounds}: ${progress.current_stage || "Embedding public-key carrier"}.`;
+    updateEmbeddingProgress({ ...progress, message });
+    setOverallStatus(message, "running");
+    return;
+  }
+  updateSenderStage(name, data);
+  if (name === "ecdhe_key_confirmation" && data.status === "success") {
+    const status = document.getElementById("ecdhe-exchange-status");
+    status.textContent = "Key confirmation verified";
+    status.className = "status-label success";
+  }
+  if (name === "ecdhe_key_derivation" && data.status === "success") {
+    const totalRounds = Number([...ecdheRounds.values()][0]?.total_rounds || 0);
+    const verifiedRounds = [...ecdheRounds.values()].filter((entry) => entry.status === "verified").length;
+    const status = document.getElementById("ecdhe-exchange-status");
+    status.textContent = `Handshake complete · ${verifiedRounds}/${totalRounds} carriers verified`;
+    status.className = "status-label success";
+  }
+  if (name.startsWith("ecdhe_") && data.status === "failed") {
+    setEcdheHandshakeFailure(data.message || "ECDHE handshake failed.");
+  }
+}
 
 function setBusy(busy) {
   senderButton.disabled = busy;
@@ -45,12 +204,14 @@ function clearPipelineResults() {
   currentEmbeddingEvent = {};
   lastEmbeddingProgress = {};
   updateEmbeddingProgress({});
+  resetEcdheExchange();
 }
 
 const senderStageTitles = {
   ecdhe_key_pair_generation: "ECDHE · Ephemeral X25519 key pairs",
   ecdhe_public_key_exchange: "ECDHE · Public-key exchange",
   ecdhe_shared_secret: "ECDHE · Shared-secret agreement",
+  ecdhe_key_confirmation: "ECDHE · Key confirmation",
   ecdhe_key_derivation: "ECDHE · PBKDF2 DK1/DK2 derivation",
   key_establishment: "A · Key establishment",
   pbkdf2: "B · PBKDF2 key derivation",
@@ -82,6 +243,9 @@ const senderFields = {
   ],
   ecdhe_shared_secret: [
     ["Endpoint agreement", "match"],
+    ["Handshake progress", "message"],
+  ],
+  ecdhe_key_confirmation: [
     ["Handshake progress", "message"],
   ],
   ecdhe_key_derivation: [
@@ -449,6 +613,7 @@ function updateReceiverStage(name, data) {
 
 function updateModeUI() {
   const ecdhe = modeSelect.value === "ECDHE";
+  document.getElementById("ecdhe-exchange").classList.toggle("hidden", !ecdhe);
   document.getElementById("sender-password-field").classList.toggle("hidden", ecdhe);
   document.getElementById("receiver-password-field").classList.toggle("hidden", ecdhe);
   senderPassword.required = !ecdhe;
@@ -467,6 +632,7 @@ function updateModeUI() {
   document.getElementById("receiver-key-help").textContent = ecdhe
     ? "The receiver uses its own backend-held ECDHE-derived keys from this local session; no password or key bytes are sent."
     : "Enter the same password used by the sender. The receiver re-derives its own keys; no key bytes are transferred.";
+  resetEcdheExchange();
 }
 
 async function copyText(text, button) {
@@ -565,11 +731,11 @@ function postSenderStream(payload) {
   return postEventStream("/api/sender/stream", payload, updateSenderStage, "sender");
 }
 
-function postHandshakeStream() {
+function postHandshakeStream(topic) {
   return postEventStream(
     "/api/ecdhe/handshake/stream",
-    {},
-    updateSenderStage,
+    { topic },
+    updateHandshakeStage,
     "ECDHE handshake",
   );
 }
@@ -595,14 +761,16 @@ senderForm.addEventListener("submit", async (event) => {
   setPipelineStage("key_establishment", "running");
   document.getElementById("channel-status").textContent = "Waiting for real LLM generation to finish.";
   addLog("Sender pipeline started. Password and plaintext are not written to the execution log.");
+  let ecdheHandshakeComplete = false;
   try {
     const mode = modeSelect.value;
     let ecdheSessionId;
     if (mode === "ECDHE") {
       senderButton.querySelector("span").textContent = "Establishing ECDHE session…";
       addLog("ECDHE handshake started between two logical endpoints on this computer; no password is used.");
-      const handshake = await postHandshakeStream();
+      const handshake = await postHandshakeStream(document.getElementById("topic").value);
       ecdheSessionId = handshake.session_id;
+      ecdheHandshakeComplete = true;
       addLog("ECDHE handshake completed. Public-key exchange is unauthenticated; secret key bytes were not exposed.");
     }
     senderButton.querySelector("span").textContent = "Running real sender pipeline…";
@@ -619,6 +787,9 @@ senderForm.addEventListener("submit", async (event) => {
     setOverallStatus("Sender verified · ready to deliver", "success");
     addLog("Sender completed: encryption, real embedding, extraction, and AEAD verification succeeded.");
   } catch (error) {
+    if (modeSelect.value === "ECDHE" && !ecdheHandshakeComplete) {
+      setEcdheHandshakeFailure(error.message);
+    }
     const failedStage = error.stage === "verification" ? "sender_verification" : error.stage;
     if (failedStage && senderStageTitles[failedStage]) {
       updateSenderStage(failedStage, { status: "failed", message: error.message });
