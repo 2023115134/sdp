@@ -25,7 +25,7 @@
       <div class="hero-copy">
         <p class="eyebrow">PHASE 1 · END-TO-END PROTOTYPE</p>
         <h1>Secure communication,<br><em>made observable.</em></h1>
-        <p class="hero-description">Explore the real PSK sender and receiver pipeline, from AES-GCM protection through h4 mapping and LLM-based carrier generation to authenticated plaintext recovery.</p>
+        <p class="hero-description">Explore PSK or a backend X25519 ECDHE handshake with the same AES-GCM, h4 mapping, LLM-based carrier generation, and authenticated plaintext recovery pipeline.</p>
       </div>
       <div class="hero-note">
         <span class="note-icon" aria-hidden="true">i</span>
@@ -36,8 +36,8 @@
     <section class="overview-grid" aria-label="Protocol overview">
       <article class="overview-card">
         <span class="card-index">01 / MODE</span>
-        <strong>PSK</strong>
-        <p>Pre-shared password</p>
+        <strong id="mode-overview">PSK</strong>
+        <p id="mode-overview-detail">Pre-shared password</p>
       </article>
       <article class="overview-card">
         <span class="card-index">02 / KEY DERIVATION</span>
@@ -62,7 +62,7 @@
         <span id="overall-status" class="status-badge pending">Waiting for input</span>
       </div>
       <ol class="pipeline-track" id="pipeline-track">
-        <li data-step="key_establishment"><span>01</span><b>Key establishment</b><small>PSK</small></li>
+        <li data-step="key_establishment"><span>01</span><b>Key establishment</b><small id="key-mode-step">PSK</small></li>
         <li data-step="pbkdf2"><span>02</span><b>PBKDF2</b><small>DK1 + DK2</small></li>
         <li data-step="encryption"><span>03</span><b>AES-GCM</b><small>Encrypt</small></li>
         <li data-step="payload"><span>04</span><b>Payload</b><small>tag || ciphertext</small></li>
@@ -81,14 +81,20 @@
       <section class="panel sender-panel" id="sender">
         <div class="panel-heading">
           <div><p class="eyebrow">01 · SENDER</p><h2>Prepare a message</h2></div>
-          <span class="mode-pill">PSK MODE</span>
+          <span class="mode-pill" id="mode-pill">PSK MODE</span>
         </div>
         <form id="sender-form">
+          <label for="key-mode">Key-establishment mode</label>
+          <select id="key-mode" name="mode">
+            <option value="PSK">PSK · pre-shared password</option>
+            <option value="ECDHE">ECDHE · ephemeral X25519</option>
+          </select>
+          <p id="mode-explanation" class="field-help">Sender and receiver independently derive keys from the same pre-shared password.</p>
           <label for="secret-message">Secret plaintext</label>
           <textarea id="secret-message" name="message" rows="3" maxlength="4000" required placeholder="Enter a short message for the demonstration"></textarea>
           <div class="form-row">
-            <div>
-              <label for="sender-password">Pre-shared password</label>
+            <div id="sender-password-field">
+              <label for="sender-password">Sender PSK</label>
               <input id="sender-password" name="password" type="password" autocomplete="new-password" required>
             </div>
             <div>
@@ -116,7 +122,7 @@
           <div><p class="eyebrow">02 · PUBLIC CHANNEL</p><h2>Carrier text channel</h2></div>
           <span class="channel-mark"><i></i> OPEN TEXT</span>
         </div>
-        <p class="panel-intro">Only the generated carrier is presented as channel content. Local demo metadata and the PSK are not part of this carrier-text panel.</p>
+        <p class="panel-intro">Only the generated carrier is presented as channel content. Local session metadata and PSKs are not part of this carrier-text panel.</p>
         <div class="carrier-empty" id="carrier-empty">
           <span class="empty-glyph" aria-hidden="true">···</span>
           <p>Run the sender to generate a carrier.</p>
@@ -151,9 +157,11 @@
           <textarea id="received-carrier" rows="8" placeholder="Delivered carrier text appears here. You can also paste carrier text to test extraction."></textarea>
         </div>
         <div class="receiver-controls">
-          <label for="receiver-password">Receiver PSK</label>
-          <input id="receiver-password" type="password" autocomplete="new-password" required>
-          <p class="field-help">Enter the same password used by the sender. The receiver re-derives its own keys; no key bytes are transferred.</p>
+          <div id="receiver-password-field">
+            <label for="receiver-password">Receiver PSK</label>
+            <input id="receiver-password" type="password" autocomplete="new-password" required>
+          </div>
+          <p id="receiver-key-help" class="field-help">Enter the same password used by the sender. The receiver re-derives its own keys; no key bytes are transferred.</p>
           <button class="button button-primary" id="run-receiver" type="button" disabled>Run receiver pipeline <span aria-hidden="true">→</span></button>
           <div id="receiver-status" class="receiver-status pending" aria-live="polite">Waiting for carrier delivery.</div>
         </div>
@@ -171,7 +179,7 @@
 
     <section class="notice-box">
       <span class="note-icon" aria-hidden="true">!</span>
-      <div><strong>ECDHE is available in the existing TCP demonstration, not this web interface.</strong><p>For real two-terminal ECDHE key exchange, run <code>server_b.py</code> and then <code>server_a.py</code> using the documented commands. This UI does not simulate a TCP exchange or label a local shortcut as ECDHE.</p></div>
+      <div><strong>ECDHE web mode is a single-computer demonstration.</strong><p>The backend creates separate logical sender and receiver endpoints and performs a real X25519 exchange in-process. The public keys are not peer-authenticated, so this does not protect against a man-in-the-middle attack and is not a two-computer protocol. It uses no sender password or TCP carrier-bootstrap secret. Existing TCP ECDHE remains separate.</p></div>
     </section>
   </main>
 

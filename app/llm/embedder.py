@@ -1731,6 +1731,24 @@ class EmbedderLLM:
             start=1,
         ):
             self._embedding_stats["retries"] += 1
+            progress_event_callback = getattr(
+                self, "_progress_event_callback", None
+            )
+            if progress_event_callback is not None:
+                progress_event_callback(
+                    {
+                        "event": "retry_started",
+                        "index": self._progress_current,
+                        "total": self._progress_total,
+                        "character": character,
+                        "position": position,
+                        "retry_number": retry_number,
+                        "retry_limit": retry_limit,
+                        "temperature": retry_temperature,
+                        "top_k": retry_top_k,
+                        "status": "retrying",
+                    }
+                )
             if getattr(self, "_verbose", True):
                 print(
                     f"Retry {retry_number}: T={retry_temperature:.2f} "
@@ -1746,6 +1764,7 @@ class EmbedderLLM:
                 )
 
             story = original_story
+            retry_candidate_start = self._embedding_stats["candidate_evaluations"]
             result = self._generate_to_position(
                 story=story,
                 character=character,
@@ -1767,6 +1786,25 @@ class EmbedderLLM:
                         character,
                     )
                 ):
+                    if progress_event_callback is not None:
+                        progress_event_callback(
+                            {
+                                "event": "character_embedded",
+                                "index": self._progress_current,
+                                "total": self._progress_total,
+                                "character": character,
+                                "position": position,
+                                "retry_number": retry_number,
+                                "retry_limit": retry_limit,
+                                "temperature": retry_temperature,
+                                "top_k": retry_top_k,
+                                "candidate_evaluations": (
+                                    self._embedding_stats["candidate_evaluations"]
+                                    - retry_candidate_start
+                                ),
+                                "status": "embedded",
+                            }
+                        )
                     if getattr(self, "_verbose", True):
                         print("Status: Embedded successfully", flush=True)
                         elapsed = time.perf_counter() - character_started
@@ -1785,6 +1823,26 @@ class EmbedderLLM:
                 "_last_failure_reason",
                 "candidate rejected or generation did not reach the position",
             )
+            if progress_event_callback is not None:
+                progress_event_callback(
+                    {
+                        "event": "candidate_rejected",
+                        "index": self._progress_current,
+                        "total": self._progress_total,
+                        "character": character,
+                        "position": position,
+                        "retry_number": retry_number,
+                        "retry_limit": retry_limit,
+                        "temperature": retry_temperature,
+                        "top_k": retry_top_k,
+                        "candidate_evaluations": (
+                            self._embedding_stats["candidate_evaluations"]
+                            - retry_candidate_start
+                        ),
+                        "status": "rejected",
+                        "reason": last_failure_reason,
+                    }
+                )
             if getattr(self, "_verbose", True):
                 print(f"Candidate rejected: {last_failure_reason}", flush=True)
                 if retry_number < retry_limit:
@@ -1805,6 +1863,25 @@ class EmbedderLLM:
                 f"retries={self._embedding_stats['retries'] - character_stats_start['retries']}, "
                 f"time={elapsed:.2f}s",
                 flush=True,
+            )
+        progress_event_callback = getattr(self, "_progress_event_callback", None)
+        if progress_event_callback is not None:
+            progress_event_callback(
+                {
+                    "event": "character_failed",
+                    "index": self._progress_current,
+                    "total": self._progress_total,
+                    "character": character,
+                    "position": position,
+                    "retry_number": retry_number,
+                    "retry_limit": retry_limit,
+                    "candidate_evaluations": (
+                        self._embedding_stats["candidate_evaluations"]
+                        - character_stats_start["candidate_evaluations"]
+                    ),
+                    "status": "failed",
+                    "reason": last_failure_reason,
+                }
             )
         raise RuntimeError(
             f"Unable to embed character '{character}' at position {position} "
@@ -1831,10 +1908,12 @@ class EmbedderLLM:
         allow_adaptive_positions: bool = False,
         verbose: bool = True,
         progress_callback: Callable[[int, int, str], None] | None = None,
+        progress_event_callback: Callable[[dict[str, object]], None] | None = None,
     ) -> EmbeddingResult:
 
         self._verbose = verbose
         self._progress_callback = progress_callback
+        self._progress_event_callback = progress_event_callback
         self._validate_inputs(
             topic=topic,
             characters=characters,
@@ -1912,6 +1991,17 @@ class EmbedderLLM:
         ):
 
             self._progress_current = index + 1
+            if progress_event_callback is not None:
+                progress_event_callback(
+                    {
+                        "event": "character_started",
+                        "index": index + 1,
+                        "total": len(characters),
+                        "character": character,
+                        "position": position,
+                        "status": "embedding",
+                    }
+                )
             if progress_callback is not None:
                 progress_callback(index, len(characters), "embedding")
             if verbose:

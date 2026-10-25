@@ -16,7 +16,7 @@ The project aims to build a research-oriented prototype for covert communication
 
 ## Current Phase
 
-Phase 1 is the core implementation stage and includes the essential research contribution for the project. The web demonstration is intended for local academic review; it is not a production deployment or a claim of undetectability. The existing two-terminal TCP workflow supports both PSK and ECDHE. The web interface currently integrates the real PSK pipeline; it does not simulate or replace the TCP ECDHE exchange.
+Phase 1 is the core implementation stage and includes the essential research contribution for the project. The web demonstration is intended for local academic review; it is not a production deployment or a claim of undetectability. The web UI and existing two-terminal TCP workflow both support PSK and ECDHE, but their ECDHE handshakes are different: the web UI performs an in-process handshake between two backend logical endpoints, while TCP uses the existing network protocol.
 
 ## Local demonstration UI
 
@@ -39,13 +39,14 @@ the setup steps below first. Install the project requirements with:
 The first complete sender run initializes or downloads the configured Hugging
 Face model, so it may take several minutes and requires internet access if the
 model is not already cached. Keep the browser tab open while the model runs.
-The interface uses the existing AES-GCM, PBKDF2, h4 mapping, SHAKE-128
+The interface reuses the existing AES-GCM, PBKDF2, h4 mapping, SHAKE-128
 position-generation, `EmbedderLLM`, extraction, and authenticated decryption
 implementations. It shows public salt/nonce/AAD and derived-key lengths but
-does not return derived key bytes or PSKs to the browser. Passwords are not
-logged or persisted in browser storage.
+does not return derived key bytes, private keys, or shared secrets to the
+browser. PSK mode remains the default. ECDHE mode does not ask for a sender
+password.
 
-Demo flow:
+PSK demo flow:
 
 1. Enter a short plaintext, a PSK, and a carrier topic; optionally adjust
    temperature and top-k.
@@ -57,10 +58,38 @@ Demo flow:
    after AES-256-GCM authentication succeeds. Editing the carrier or using a
    different PSK demonstrates extraction/authentication failure.
 
+ECDHE demo flow:
+
+1. Select **ECDHE** and enter a plaintext and carrier topic; no password is
+   used.
+2. The backend generates independent ephemeral X25519 key pairs for logical
+   sender and receiver endpoints, exchanges their public keys in-process, and
+   calculates the shared secret independently at both endpoints.
+3. Both endpoints use the same fresh 16-byte salt with the existing
+   `derive_ecdhe_keys` PBKDF2 path to derive compatible DK1/DK2. Private keys,
+   shared secrets, and derived key bytes remain backend-only. Only an opaque,
+   15-minute session handle is returned to the browser. A handle authorizes
+   one sender run and receiver attempts are bound to that run's salt, nonce,
+   and mapped length; establish a new handshake to send another message.
+4. The sender uses DK1/DK2 in the same AES-GCM, `tag || ciphertext`, h4,
+   SHAKE-128, and `EmbedderLLM` pipeline as PSK mode. The receiver uses its
+   separately derived keys to extract, authenticate, and decrypt. Both sides
+   compute the same `payload_associated_data(mapped_length)` bytes.
+
+This ECDHE web flow is explicitly a **single-computer demonstration**. Public
+keys are exchanged inside one backend process and are not peer-authenticated;
+there is no protection against an active man-in-the-middle. It is not a
+two-computer or network ECDHE service. The web flow does not use the TCP
+public-key carrier exchange or its optional
+`LLM_SHIELD_PREVIOUS_SHARED_SECRET` bootstrap value. That value is used only by
+the existing TCP carrier-position scheme; by default it is empty and does not
+authenticate the TCP peer or make those public-key carriers secret.
+
 The UI execution log records stage outcomes only. Its public-channel panel
-contains carrier text; salt, nonce, and mapped length are separate local demo
-metadata used by the receiver, not embedded into the carrier. ECDHE remains
-available in the terminal TCP workflow documented below.
+contains carrier text; salt, nonce, mapped length, and the opaque ECDHE session
+handle are separate local demo metadata used by the receiver, not embedded
+into the carrier. ECDHE handshake events are streamed as they occur; the UI
+does not simulate handshake or receiver progress.
 
 Sender intermediate outputs stream into the pipeline panel as each stage
 finishes. Cryptography, payload, mapping, and target-position results appear
@@ -92,14 +121,15 @@ generation and sender-side checks complete.
    `.\.venv\Scripts\python.exe -m app.web_server --port 8766`.
 5. Open **http://127.0.0.1:8765** in the browser address bar (use `8766` if
    you chose that port).
-6. Enter a short message, a pre-shared password, and a carrier topic, then
-   select **Run complete sender**. The first run may take several minutes
-   while the configured model downloads or initializes. Intermediate stage
-   outputs appear as the sender runs.
+6. Select **PSK** or **ECDHE**. Enter a short message and carrier topic (plus
+   a pre-shared password for PSK), then select **Run complete sender**. ECDHE
+   key-pair generation, public-key exchange, shared-secret calculation, and
+   key derivation are shown as actual backend stages. The first embedding run
+   may take several minutes while the configured model downloads or initializes.
 7. After the sender succeeds, select **Deliver carrier text to receiver**.
-   Enter the same password in **Receiver PSK**, then select
-   **Run receiver pipeline**. A successful run displays authenticated
-   plaintext.
+   For PSK, enter the same password in **Receiver PSK**. For ECDHE, no
+   receiver password is needed. Select **Run receiver pipeline**; a successful
+   run displays authenticated plaintext.
 8. When finished, press **Ctrl+C** in the PowerShell window to stop the server.
 
 ## Project Structure

@@ -6,6 +6,7 @@ from app.crypto.mapping import CharacterMap
 from app.crypto.position_generator import PositionGenerator
 from app.extraction.extractor import Extractor
 from app.llm.embedder import EmbedderLLM
+from app.web_demo import _log_embedding_progress
 
 
 class _FakeCandidate:
@@ -154,6 +155,41 @@ def test_progress_callback_does_not_report_invalid_character_as_embedded(monkeyp
         )
 
     assert progress == [(0, 1, "embedding")]
+
+
+def test_detailed_progress_callback_logs_real_character_retry_and_candidate_events(
+    monkeypatch, capsys
+):
+    embedder = EmbedderLLM()
+
+    def embed_at_target(**kwargs):
+        embedder._embedding_stats["candidate_evaluations"] += 3
+        if kwargs["top_k"] == 40:
+            embedder._last_failure_reason = "no valid candidate"
+            return None
+        return kwargs["story"].ljust(kwargs["position"], " ") + kwargs["character"]
+
+    monkeypatch.setattr(embedder, "_generate_to_position", embed_at_target)
+    result = embedder.embed(
+        topic="quiet city",
+        characters="Q",
+        positions=[20],
+        initial_story="A",
+        verbose=False,
+        progress_event_callback=_log_embedding_progress,
+    )
+
+    assert result.story[20] == "Q"
+    terminal_output = capsys.readouterr().out
+    assert "Embedding 1/1" in terminal_output
+    assert "Character: Q" in terminal_output
+    assert "Character: 'Q'" not in terminal_output
+    assert "Position: 20" in terminal_output
+    assert "Retry 1: T=0.70 k=40" in terminal_output
+    assert "Retry 1/12" not in terminal_output
+    assert "Candidate rejected: no valid candidate" in terminal_output
+    assert "Retry 2: T=0.70 k=50" in terminal_output
+    assert "Status: Embedded successfully (candidate evaluations this retry: 3)" in terminal_output
 
 
 def test_normal_candidate_prefers_fresh_text_and_rejects_repetitive_only_option():

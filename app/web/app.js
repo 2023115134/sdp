@@ -8,11 +8,15 @@ const receivedCarrier = document.getElementById("received-carrier");
 const senderOutput = document.getElementById("sender-stage-output");
 const receiverOutput = document.getElementById("receiver-stage-output");
 const logList = document.getElementById("execution-log");
+const modeSelect = document.getElementById("key-mode");
+const senderPassword = document.getElementById("sender-password");
+const receiverPassword = document.getElementById("receiver-password");
 let sessionMetadata = null;
 
 function setBusy(busy) {
   senderButton.disabled = busy;
   resetButton.disabled = busy;
+  modeSelect.disabled = busy;
   deliverButton.disabled = busy || !sessionMetadata;
   receiverButton.disabled = busy || !sessionMetadata;
 }
@@ -39,6 +43,10 @@ function clearPipelineResults() {
 }
 
 const senderStageTitles = {
+  ecdhe_key_pair_generation: "ECDHE · Ephemeral X25519 key pairs",
+  ecdhe_public_key_exchange: "ECDHE · Public-key exchange",
+  ecdhe_shared_secret: "ECDHE · Shared-secret agreement",
+  ecdhe_key_derivation: "ECDHE · PBKDF2 DK1/DK2 derivation",
   key_establishment: "A · Key establishment",
   pbkdf2: "B · PBKDF2 key derivation",
   encryption: "C · AES-256-GCM encryption",
@@ -59,6 +67,26 @@ const receiverStageTitles = {
 };
 
 const senderFields = {
+  ecdhe_key_pair_generation: [
+    ["Algorithm", "algorithm"],
+    ["Handshake progress", "message"],
+  ],
+  ecdhe_public_key_exchange: [
+    ["Transport", "transport"],
+    ["Handshake progress", "message"],
+  ],
+  ecdhe_shared_secret: [
+    ["Endpoint agreement", "match"],
+    ["Handshake progress", "message"],
+  ],
+  ecdhe_key_derivation: [
+    ["Algorithm", "algorithm"],
+    ["Iterations", "iterations"],
+    ["Public salt (hex)", "salt_hex"],
+    ["DK1 length", "dk1_length", "bytes"],
+    ["DK2 length", "dk2_length", "bytes"],
+    ["Handshake progress", "message"],
+  ],
   key_establishment: [
     ["Selected mode", "mode"],
     ["Explanation", "explanation"],
@@ -290,6 +318,10 @@ function updateSenderStage(name, data) {
   }
 
   const pipelineStep = {
+    ecdhe_key_pair_generation: "key_establishment",
+    ecdhe_public_key_exchange: "key_establishment",
+    ecdhe_shared_secret: "key_establishment",
+    ecdhe_key_derivation: "key_establishment",
     key_establishment: "key_establishment",
     pbkdf2: "pbkdf2",
     encryption: "encryption",
@@ -300,6 +332,9 @@ function updateSenderStage(name, data) {
     carrier: "carrier",
   }[name];
   if (pipelineStep) setPipelineStage(pipelineStep, data.status);
+  if (name.startsWith("ecdhe_") && data.status === "running") {
+    setOverallStatus(data.message || "ECDHE handshake in progress", "running");
+  }
   if (name === "embedding" && data.status === "running" && data.current_character) {
     const current = data.current_character;
     const total = data.total_characters || data.mapped_character_count;
@@ -320,6 +355,66 @@ function updateSenderStage(name, data) {
     document.getElementById("carrier-length").textContent = String(data.length);
     document.getElementById("channel-status").textContent = "Carrier generated. Sender verification is finishing.";
   }
+}
+
+function updateReceiverStage(name, data) {
+  const title = receiverStageTitles[name];
+  if (!title) return;
+  const card = createStageCard(title, data, receiverFields[name] || []);
+  card.dataset.receiverStage = name;
+  const existing = receiverOutput.querySelector(`[data-receiver-stage="${name}"]`);
+  if (existing) {
+    existing.replaceWith(card);
+  } else {
+    const emptyState = receiverOutput.querySelector(".empty-state");
+    if (emptyState) emptyState.remove();
+    const order = Object.keys(receiverStageTitles);
+    const index = order.indexOf(name);
+    const nextCard = [...receiverOutput.children].find(
+      (child) => order.indexOf(child.dataset.receiverStage) > index,
+    );
+    receiverOutput.classList.remove("empty-state");
+    receiverOutput.insertBefore(card, nextCard || null);
+  }
+  if (["extraction", "inverse_mapping", "authentication"].includes(name)) {
+    setPipelineStage(name, data.status);
+  }
+  if (name === "key_derivation" && data.status === "running") {
+    setPipelineStage("key_establishment", "running");
+  } else if (name === "key_derivation" && data.status === "success") {
+    setPipelineStage("key_establishment", "success");
+  }
+  if (data.status === "running" && data.message) {
+    document.getElementById("receiver-status").textContent = data.message;
+    document.getElementById("receiver-status").className = "receiver-status pending";
+    setOverallStatus(data.message, "running");
+  }
+}
+
+function updateModeUI() {
+  const ecdhe = modeSelect.value === "ECDHE";
+  document.getElementById("sender-password-field").classList.toggle("hidden", ecdhe);
+  document.getElementById("receiver-password-field").classList.toggle("hidden", ecdhe);
+  senderPassword.required = !ecdhe;
+  receiverPassword.required = !ecdhe;
+  if (ecdhe) {
+    senderPassword.value = "";
+    receiverPassword.value = "";
+  }
+  document.getElementById("mode-pill").textContent = `${modeSelect.value} MODE`;
+  document.getElementById("mode-overview").textContent = modeSelect.value;
+  document.getElementById("mode-overview-detail").textContent = ecdhe
+    ? "Ephemeral X25519 · local demo"
+    : "Pre-shared password";
+  document.getElementById("key-mode-step").textContent = ecdhe
+    ? "ECDHE · local handshake"
+    : "PSK";
+  document.getElementById("mode-explanation").textContent = ecdhe
+    ? "No password is used. The backend runs a real X25519 exchange between two logical endpoints on this computer; the exchange is not peer-authenticated."
+    : "Sender and receiver independently derive keys from the same pre-shared password.";
+  document.getElementById("receiver-key-help").textContent = ecdhe
+    ? "The receiver uses its own backend-held ECDHE-derived keys from this local session; no password or key bytes are sent."
+    : "Enter the same password used by the sender. The receiver re-derives its own keys; no key bytes are transferred.";
 }
 
 async function copyText(text, button) {
@@ -354,33 +449,18 @@ function showSenderResult(data) {
 
 function resetDemo() {
   senderForm.reset();
-  document.getElementById("receiver-password").value = "";
+  receiverPassword.value = "";
   sessionMetadata = null;
   clearPipelineResults();
+  updateModeUI();
   setBusy(false);
   resetPipeline();
   logList.replaceChildren();
   addLog("Demo reset. No password or key material was retained.");
 }
 
-async function postJson(url, payload) {
+async function postEventStream(url, payload, onStage, requestName) {
   const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    cache: "no-store",
-    body: JSON.stringify(payload),
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    const error = new Error(data.error || "The request failed.");
-    error.stage = data.stage;
-    throw error;
-  }
-  return data;
-}
-
-async function postSenderStream(payload) {
-  const response = await fetch("/api/sender/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     cache: "no-store",
@@ -393,7 +473,7 @@ async function postSenderStream(payload) {
     } catch {
       // Keep the transport error when the server did not return JSON.
     }
-    const failure = new Error(errorData && errorData.error || "The sender request failed.");
+    const failure = new Error(errorData && errorData.error || `The ${requestName} request failed.`);
     failure.stage = errorData && errorData.stage;
     throw failure;
   }
@@ -406,9 +486,9 @@ async function postSenderStream(payload) {
     if (!line.trim()) return;
     const event = JSON.parse(line);
     if (event.type === "stage") {
-      updateSenderStage(event.key, event.data);
+      onStage(event.key, event.data);
     } else if (event.type === "error") {
-      const error = new Error(event.error || "The sender request failed.");
+      const error = new Error(event.error || `The ${requestName} request failed.`);
       error.stage = event.stage;
       throw error;
     } else if (event.type === "complete") {
@@ -425,8 +505,30 @@ async function postSenderStream(payload) {
     if (done) break;
   }
   if (buffer.trim()) consumeLine(buffer);
-  if (!completed) throw new Error("The sender stream ended before completion.");
+  if (!completed) throw new Error(`The ${requestName} stream ended before completion.`);
   return completed;
+}
+
+function postSenderStream(payload) {
+  return postEventStream("/api/sender/stream", payload, updateSenderStage, "sender");
+}
+
+function postHandshakeStream() {
+  return postEventStream(
+    "/api/ecdhe/handshake/stream",
+    {},
+    updateSenderStage,
+    "ECDHE handshake",
+  );
+}
+
+function postReceiverStream(payload) {
+  return postEventStream(
+    "/api/receiver/stream",
+    payload,
+    updateReceiverStage,
+    "receiver",
+  );
 }
 
 senderForm.addEventListener("submit", async (event) => {
@@ -442,10 +544,22 @@ senderForm.addEventListener("submit", async (event) => {
   document.getElementById("channel-status").textContent = "Waiting for real LLM generation to finish.";
   addLog("Sender pipeline started. Password and plaintext are not written to the execution log.");
   try {
+    const mode = modeSelect.value;
+    let ecdheSessionId;
+    if (mode === "ECDHE") {
+      senderButton.querySelector("span").textContent = "Establishing ECDHE session…";
+      addLog("ECDHE handshake started between two logical endpoints on this computer; no password is used.");
+      const handshake = await postHandshakeStream();
+      ecdheSessionId = handshake.session_id;
+      addLog("ECDHE handshake completed. Public-key exchange is unauthenticated; secret key bytes were not exposed.");
+    }
+    senderButton.querySelector("span").textContent = "Running real sender pipeline…";
     const data = await postSenderStream({
       message: document.getElementById("secret-message").value,
-      password: document.getElementById("sender-password").value,
+      ...(mode === "PSK" ? { password: senderPassword.value } : {}),
       topic: document.getElementById("topic").value,
+      mode,
+      ...(ecdheSessionId ? { ecdhe_session_id: ecdheSessionId } : {}),
       temperature: Number(document.getElementById("temperature").value),
       top_k: Number(document.getElementById("top-k").value),
     });
@@ -467,18 +581,29 @@ senderForm.addEventListener("submit", async (event) => {
     document.getElementById("channel-status").textContent = error.message;
     addLog(`Sender failed at ${error.stage || "pipeline"} stage: ${error.message}`);
   } finally {
-    document.getElementById("sender-password").value = "";
+    senderPassword.value = "";
     setBusy(false);
     senderButton.querySelector("span").textContent = "Run complete sender";
   }
+});
+
+modeSelect.addEventListener("change", () => {
+  sessionMetadata = null;
+  clearPipelineResults();
+  resetPipeline();
+  updateModeUI();
+  setBusy(false);
+  addLog(`${modeSelect.value} mode selected. Previous session metadata was discarded from the browser.`);
 });
 
 deliverButton.addEventListener("click", () => {
   if (!sessionMetadata) return;
   receivedCarrier.value = carrierText.textContent;
   document.getElementById("channel-status").textContent = "Carrier text delivered to the receiver editor.";
-  document.getElementById("receiver-status").textContent = "Carrier delivered. Enter the receiver PSK to run extraction.";
-  document.getElementById("receiver-password").focus();
+  document.getElementById("receiver-status").textContent = modeSelect.value === "ECDHE"
+    ? "Carrier delivered. Run receiver extraction with the established local ECDHE session."
+    : "Carrier delivered. Enter the receiver PSK to run extraction.";
+  if (modeSelect.value === "PSK") receiverPassword.focus();
   addLog("Carrier text delivered through the public-channel simulation. Session metadata stayed separate.");
 });
 
@@ -487,23 +612,32 @@ receiverButton.addEventListener("click", async () => {
     document.getElementById("receiver-status").textContent = "Run the sender first to establish public session metadata.";
     return;
   }
-  if (!document.getElementById("receiver-password").value) {
-    document.getElementById("receiver-password").focus();
+  const mode = modeSelect.value;
+  if (mode === "PSK" && !receiverPassword.value) {
+    receiverPassword.focus();
     document.getElementById("receiver-status").textContent = "Enter the receiver PSK.";
     return;
   }
+  receiverOutput.replaceChildren();
+  receiverOutput.className = "receiver-results";
   setBusy(true);
   receiverButton.textContent = "Running receiver pipeline…";
   document.getElementById("receiver-status").textContent = "Regenerating positions and verifying the extracted payload…";
   document.getElementById("receiver-status").className = "receiver-status pending";
-  addLog("Receiver started with independently derived keys; no key bytes were transferred.");
+  addLog(mode === "ECDHE"
+    ? "Receiver started using its backend-held ECDHE-derived keys; no key bytes were transferred."
+    : "Receiver started with independently derived PSK keys; no key bytes were transferred.");
   try {
-    const result = await postJson("/api/receiver", {
+    const result = await postReceiverStream({
       carrier_text: receivedCarrier.value,
-      password: document.getElementById("receiver-password").value,
+      ...(mode === "PSK" ? { password: receiverPassword.value } : {}),
+      mode,
       salt_hex: sessionMetadata.salt_hex,
       nonce_hex: sessionMetadata.nonce_hex,
       mapped_length: sessionMetadata.mapped_length,
+      ...(mode === "ECDHE"
+        ? { ecdhe_session_id: sessionMetadata.ecdhe_session_id }
+        : {}),
     });
     const stages = result.stages;
     renderStages(receiverOutput, stages, receiverStageTitles, receiverFields);
@@ -543,7 +677,8 @@ receiverButton.addEventListener("click", async () => {
     receiverOutput.append(failure);
     document.getElementById("receiver-status").textContent = error.message;
     document.getElementById("receiver-status").className = "receiver-status failed";
-    if (error.stage === "extraction") setPipelineStage("extraction", "failed");
+    if (error.stage === "key_derivation") setPipelineStage("key_establishment", "failed");
+    else if (error.stage === "extraction") setPipelineStage("extraction", "failed");
     else if (error.stage === "inverse_mapping") {
       setPipelineStage("extraction", "success");
       setPipelineStage("inverse_mapping", "failed");
@@ -554,7 +689,7 @@ receiverButton.addEventListener("click", async () => {
     setOverallStatus("Receiver failed · no plaintext", "failed");
     addLog(`Receiver failed at ${error.stage || "input"} stage: ${error.message}`);
   } finally {
-    document.getElementById("receiver-password").value = "";
+    receiverPassword.value = "";
     setBusy(false);
     receiverButton.innerHTML = 'Run receiver pipeline <span aria-hidden="true">→</span>';
   }
@@ -575,6 +710,7 @@ document.getElementById("download-carrier").addEventListener("click", () => {
 });
 
 resetButton.addEventListener("click", resetDemo);
+updateModeUI();
 
 async function loadConfig() {
   try {

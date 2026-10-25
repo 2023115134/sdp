@@ -5,11 +5,18 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from app.web_demo import DemoPipelineError, get_demo_config, run_receiver, run_sender
+from app.web_demo import (
+    DemoPipelineError,
+    create_ecdhe_session,
+    get_demo_config,
+    run_receiver,
+    run_sender,
+)
 
 logger = logging.getLogger("app.web_server")
 WEB_ROOT = Path(__file__).resolve().parent / "web"
@@ -44,20 +51,34 @@ class DemoRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlsplit(self.path).path
-        if path not in {"/api/sender", "/api/sender/stream", "/api/receiver"}:
+        if path not in {
+            "/api/ecdhe/handshake/stream",
+            "/api/sender",
+            "/api/sender/stream",
+            "/api/receiver",
+            "/api/receiver/stream",
+        }:
             self._send_json(404, {"error": "Not found."})
             return
 
         try:
             payload = self._read_json()
+            if path == "/api/ecdhe/handshake/stream":
+                self._stream_ecdhe_handshake()
+                return
             if path == "/api/sender/stream":
                 self._stream_sender(payload)
+                return
+            if path == "/api/receiver/stream":
+                self._stream_receiver(payload)
                 return
             if path == "/api/sender":
                 response = run_sender(
                     message=payload.get("message"),
                     password=payload.get("password"),
                     topic=payload.get("topic"),
+                    mode=payload.get("mode", "PSK"),
+                    ecdhe_session_id=payload.get("ecdhe_session_id"),
                     temperature=payload.get("temperature", 0.7),
                     top_k=payload.get("top_k", 20),
                 )
@@ -68,6 +89,8 @@ class DemoRequestHandler(BaseHTTPRequestHandler):
                     salt_hex=payload.get("salt_hex"),
                     nonce_hex=payload.get("nonce_hex"),
                     mapped_length=payload.get("mapped_length"),
+                    mode=payload.get("mode", "PSK"),
+                    ecdhe_session_id=payload.get("ecdhe_session_id"),
                 )
         except DemoPipelineError as error:
             self._send_json(
@@ -89,36 +112,27 @@ class DemoRequestHandler(BaseHTTPRequestHandler):
         self._send_json(200, response)
 
     def _stream_sender(self, payload: dict[str, object]) -> None:
-        self.send_response(200)
-        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Connection", "close")
-        self.end_headers()
-        self.close_connection = True
-
-        def send_event(event: dict[str, object]) -> None:
-            body = json.dumps(event, ensure_ascii=False).encode("utf-8") + b"\n"
-            self.wfile.write(body)
-            self.wfile.flush()
+        self._start_event_stream()
 
         try:
             response = run_sender(
                 message=payload.get("message"),
                 password=payload.get("password"),
                 topic=payload.get("topic"),
+                mode=payload.get("mode", "PSK"),
+                ecdhe_session_id=payload.get("ecdhe_session_id"),
                 temperature=payload.get("temperature", 0.7),
                 top_k=payload.get("top_k", 20),
-                on_stage=lambda key, data: send_event(
+                on_stage=lambda key, data: self._send_event(
                     {"type": "stage", "key": key, "data": data}
                 ),
             )
-            send_event({"type": "complete", "data": response})
+            self._send_event({"type": "complete", "data": response})
         except DemoPipelineError as error:
-            send_event({"type": "error", "error": str(error), "stage": error.stage})
+            self._send_event({"type": "error", "error": str(error), "stage": error.stage})
         except Exception as error:
             logger.error("Streaming demo request failed (%s).", type(error).__name__)
-            send_event(
+            self._send_event(
                 {
                     "type": "error",
                     "error": (
@@ -127,6 +141,69 @@ class DemoRequestHandler(BaseHTTPRequestHandler):
                     ),
                 }
             )
+
+    def _stream_ecdhe_handshake(self) -> None:
+        self._start_event_stream()
+        try:
+            response = create_ecdhe_session(
+                on_stage=lambda key, data: self._send_event(
+                    {"type": "stage", "key": key, "data": data}
+                )
+            )
+            self._send_event({"type": "complete", "data": response})
+        except DemoPipelineError as error:
+            self._send_event({"type": "error", "error": str(error), "stage": error.stage})
+        except Exception as error:
+            logger.error("ECDHE handshake failed (%s).", type(error).__name__)
+            self._send_event(
+                {
+                    "type": "error",
+                    "error": "The ECDHE handshake failed unexpectedly.",
+                    "stage": "key_establishment",
+                }
+            )
+
+    def _stream_receiver(self, payload: dict[str, object]) -> None:
+        self._start_event_stream()
+        try:
+            response = run_receiver(
+                carrier_text=payload.get("carrier_text"),
+                password=payload.get("password"),
+                salt_hex=payload.get("salt_hex"),
+                nonce_hex=payload.get("nonce_hex"),
+                mapped_length=payload.get("mapped_length"),
+                mode=payload.get("mode", "PSK"),
+                ecdhe_session_id=payload.get("ecdhe_session_id"),
+                on_stage=lambda key, data: self._send_event(
+                    {"type": "stage", "key": key, "data": data}
+                ),
+            )
+            self._send_event({"type": "complete", "data": response})
+        except DemoPipelineError as error:
+            self._send_event({"type": "error", "error": str(error), "stage": error.stage})
+        except Exception as error:
+            logger.error("Streaming receiver request failed (%s).", type(error).__name__)
+            self._send_event(
+                {
+                    "type": "error",
+                    "error": "The receiver pipeline failed unexpectedly.",
+                    "stage": "receiver",
+                }
+            )
+
+    def _start_event_stream(self) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
+    def _send_event(self, event: dict[str, object]) -> None:
+        body = json.dumps(event, ensure_ascii=False).encode("utf-8") + b"\n"
+        self.wfile.write(body)
+        self.wfile.flush()
 
     def _read_json(self) -> dict[str, object]:
         content_length = self.headers.get("Content-Length")
@@ -171,6 +248,11 @@ class DemoRequestHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.1", help="Bind address (localhost by default)")
     parser.add_argument("--port", type=int, default=8765, help="HTTP port")

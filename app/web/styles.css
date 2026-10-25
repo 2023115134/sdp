@@ -31,7 +31,7 @@ body {
   line-height: 1.55;
 }
 
-button, input, textarea { font: inherit; }
+button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
 
 .topbar {
@@ -104,10 +104,10 @@ h2 { margin-bottom: 0; color: var(--navy); font: 700 20px var(--display); letter
 .channel-mark { display: inline-flex; gap: 8px; align-items: center; color: var(--green); font: 500 10px var(--mono); letter-spacing: .04em; white-space: nowrap; }
 .panel-intro { color: var(--muted); font-size: 12px; }
 label { display: block; margin-bottom: 7px; color: #38465a; font-size: 12px; font-weight: 600; }
-input, textarea { width: 100%; border: 1px solid #dce2e9; border-radius: 8px; outline: none; background: #fff; color: var(--ink); transition: border-color .15s, box-shadow .15s; }
-input { min-height: 42px; padding: 10px 12px; }
+input, textarea, select { width: 100%; border: 1px solid #dce2e9; border-radius: 8px; outline: none; background: #fff; color: var(--ink); transition: border-color .15s, box-shadow .15s; }
+input, select { min-height: 42px; padding: 10px 12px; }
 textarea { min-height: 84px; padding: 11px 12px; resize: vertical; line-height: 1.55; }
-input:focus, textarea:focus { border-color: #7fa6d6; box-shadow: 0 0 0 3px #4884c31b; }
+input:focus, textarea:focus, select:focus { border-color: #7fa6d6; box-shadow: 0 0 0 3px #4884c31b; }
 input::placeholder, textarea::placeholder { color: #a7b0bc; }
 .sender-panel form > label { margin-top: 2px; }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 15px; }

@@ -3,7 +3,14 @@ from types import SimpleNamespace
 import pytest
 
 from app.crypto.mapping import CharacterMap
-from app.web_demo import DemoPipelineError, run_receiver, run_sender
+from app.web_demo import (
+    DemoPipelineError,
+    _install_transformers_weight_progress_hook,
+    _log_embedding_progress,
+    _restore_transformers_weight_progress_hook,
+    run_receiver,
+    run_sender,
+)
 
 
 @pytest.fixture
@@ -113,6 +120,118 @@ def test_sender_emits_each_actual_stage_output_as_it_becomes_available(fake_embe
     assert emitted[-1][1]["extracted"] == sender["stages"]["sender_verification"]["extracted"]
 
 
+def test_web_sender_logs_real_embedder_events_and_keeps_browser_progress(
+    monkeypatch, capsys
+):
+    from app.llm import generator as generator_module
+    from app.llm.embedder import EmbedderLLM
+
+    class FakeGenerator:
+        model_name = "test-model"
+
+    def embed_at_target(self, **kwargs):
+        self._embedding_stats["candidate_evaluations"] += 2
+        return kwargs["story"].ljust(kwargs["position"], " ") + kwargs["character"]
+
+    monkeypatch.setattr(generator_module, "LLMGenerator", FakeGenerator)
+    monkeypatch.setattr(EmbedderLLM, "_generate_to_position", embed_at_target)
+    monkeypatch.setattr(
+        EmbedderLLM,
+        "_complete_cover_text",
+        lambda self, story, topic, max_tokens=80: story,
+    )
+    browser_events = []
+
+    sender = run_sender(
+        message="x",
+        password="test-password",
+        topic="A quiet garden",
+        on_stage=lambda name, data: browser_events.append((name, data)),
+    )
+
+    mapped_count = sender["session"]["mapped_length"]
+    progress_updates = [
+        data for name, data in browser_events
+        if name == "embedding" and "completed_characters" in data
+    ]
+    assert sender["stages"]["sender_verification"]["authentication"] == "success"
+    assert len(progress_updates) > mapped_count
+    assert progress_updates[-1]["status"] == "success"
+    assert progress_updates[-1]["completed_characters"] == mapped_count
+    terminal_output = capsys.readouterr().out
+    assert f"Embedding 1/{mapped_count}" in terminal_output
+    assert f"Embedding {mapped_count}/{mapped_count}" in terminal_output
+    assert "Character: " in terminal_output
+    assert "Retry 1: T=0.70 k=20" in terminal_output
+    assert "Retry 1/12" not in terminal_output
+    assert "candidate evaluations this retry: 2" in terminal_output
+    assert "Status: Embedded successfully" in terminal_output
+    assert "Character: '" not in terminal_output
+    assert "test-password" not in terminal_output
+
+
+def test_transformers_weight_progress_hook_reports_actual_updates(
+    monkeypatch, capsys
+):
+    from transformers.utils import logging as transformers_logging
+
+    if not callable(getattr(transformers_logging, "set_tqdm_hook", None)):
+        pytest.skip("Installed Transformers does not expose a tqdm hook.")
+
+    installed_hooks = []
+
+    def set_tqdm_hook(hook):
+        previous = installed_hooks[-1] if installed_hooks else None
+        installed_hooks[:] = [] if hook is None else [hook]
+        return previous
+
+    monkeypatch.setattr(transformers_logging, "set_tqdm_hook", set_tqdm_hook)
+    events = []
+    hook_state = _install_transformers_weight_progress_hook(events.append)
+    assert hook_state is not None
+
+    class Progress:
+        def __init__(self, iterable, total, desc):
+            self.iterable = iterable
+            self.total = total
+            self.desc = desc
+            self.n = 0
+            self.disable = False
+
+        def update(self, amount=1):
+            self.n += amount
+
+        def close(self):
+            pass
+
+    try:
+        wrapped = installed_hooks[0](
+            Progress,
+            ([object(), object()],),
+            {"total": 2, "desc": "Loading weights"},
+        )
+        assert list(wrapped) == [wrapped.iterable[0], wrapped.iterable[1]]
+        assert [
+            (event["current"], event["total"])
+            for event in events
+        ] == [(1, 2), (2, 2)]
+        for event in events:
+            _log_embedding_progress(event)
+        _log_embedding_progress(
+            {
+                "event": "character_embedded",
+                "candidate_evaluations": 1,
+            }
+        )
+    finally:
+        _restore_transformers_weight_progress_hook(hook_state)
+
+    output = capsys.readouterr().out
+    assert "Loading weights: 1/2" in output
+    assert "Loading weights: 2/2" in output
+    assert "Status: Embedded successfully" in output
+
+
 def test_sender_emits_retry_progress_without_reporting_completion(monkeypatch):
     from app.llm import embedder as embedder_module
     from app.llm import generator as generator_module
@@ -147,6 +266,46 @@ def test_sender_emits_retry_progress_without_reporting_completion(monkeypatch):
     assert "Retry 1/12 for character 1/" in updates[-1]["message"]
     assert all(update.get("completed_characters", 0) == 0 for update in updates)
     assert not any(data.get("status") == "success" for data in updates)
+
+
+def test_sender_logs_embedding_traceback_without_exposing_details_to_caller(
+    monkeypatch, caplog
+):
+    from app.llm import embedder as embedder_module
+    from app.llm import generator as generator_module
+
+    class FakeGenerator:
+        model_name = "test-model"
+
+    class InvalidEmbedding(FakeGenerator):
+        def __init__(self, llm_generator):
+            self._embedding_stats = {
+                "llm_calls": 0,
+                "candidate_evaluations": 0,
+                "retries": 0,
+            }
+
+        def embed(self, **kwargs):
+            raise ValueError("specific invalid embedding condition")
+
+    monkeypatch.setattr(generator_module, "LLMGenerator", FakeGenerator)
+    monkeypatch.setattr(embedder_module, "EmbedderLLM", InvalidEmbedding)
+    caplog.set_level("ERROR", logger="app.web_demo.embedding")
+
+    with pytest.raises(DemoPipelineError) as raised:
+        run_sender(
+            message="never logged",
+            password="never logged",
+            topic="A quiet garden",
+        )
+
+    assert str(raised.value) == (
+        "Real LLM embedding failed (ValueError). "
+        "Check model availability and server output."
+    )
+    assert "specific invalid embedding condition" in caplog.text
+    assert "Traceback (most recent call last)" in caplog.text
+    assert "never logged" not in caplog.text
 
 
 def test_receiver_authentication_failure_never_returns_plaintext(fake_embedder):
