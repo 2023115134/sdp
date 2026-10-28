@@ -66,6 +66,8 @@ _ECDHE_SESSION_TTL_SECONDS = 900
 _ECDHE_MAX_ACTIVE_SESSIONS = 128
 _ecdhe_sessions: dict[str, _ECDHESession] = {}
 _ecdhe_sessions_lock = threading.Lock()
+_LIVE_TRANSACTIONS: dict[str, dict[str, Any]] = {}
+_LIVE_TRANSACTIONS_LOCK = threading.Lock()
 
 
 def _emit_stage(
@@ -75,6 +77,102 @@ def _emit_stage(
 ) -> None:
     if callback is not None:
         callback(name, data)
+
+
+def _new_transaction_id(mode: str, base_id: object = None) -> str:
+    if isinstance(base_id, str) and base_id.strip():
+        return base_id.strip()
+    return f"{mode.lower()}-{secrets.token_hex(8)}"
+
+
+def _update_live_transaction(
+    transaction_id: str,
+    *,
+    mode: str,
+    sender: dict[str, Any] | None = None,
+    receiver: dict[str, Any] | None = None,
+    llm_execution_type: str | None = None,
+    recovery_status: str | None = None,
+    end_to_end_ms: float | None = None,
+    message_length_chars: int | None = None,
+) -> dict[str, Any]:
+    with _LIVE_TRANSACTIONS_LOCK:
+        entry = _LIVE_TRANSACTIONS.setdefault(
+            transaction_id,
+            {
+                "transaction_id": transaction_id,
+                "mode": mode,
+                "status": "pending",
+                "message_length_chars": message_length_chars,
+                "sender": {"status": "pending", "stage_timings": {}},
+                "receiver": {"status": "pending", "stage_timings": {}},
+                "llm_execution_type": "N/A",
+                "recovery_status": "pending",
+                "end_to_end_ms": None,
+                "updated_at": time.time(),
+            },
+        )
+        if mode:
+            entry["mode"] = mode
+        if message_length_chars is not None:
+            entry["message_length_chars"] = message_length_chars
+        if sender is not None:
+            entry["sender"] = {**entry.get("sender", {}), **sender}
+        if receiver is not None:
+            entry["receiver"] = {**entry.get("receiver", {}), **receiver}
+        if llm_execution_type is not None:
+            entry["llm_execution_type"] = llm_execution_type
+        if recovery_status is not None:
+            entry["recovery_status"] = recovery_status
+        if end_to_end_ms is not None:
+            entry["end_to_end_ms"] = end_to_end_ms
+        entry["updated_at"] = time.time()
+        sender_status = entry.get("sender", {}).get("status")
+        receiver_status = entry.get("receiver", {}).get("status")
+        if sender_status == "success" and receiver_status == "success":
+            entry["status"] = "success"
+        elif sender_status == "failed" or receiver_status == "failed":
+            entry["status"] = "failed"
+        elif sender_status == "running" or receiver_status == "running":
+            entry["status"] = "running"
+        else:
+            entry["status"] = "pending"
+        return entry
+
+
+def get_live_transaction_metrics(transaction_id: str | None = None) -> dict[str, Any]:
+    with _LIVE_TRANSACTIONS_LOCK:
+        if transaction_id is not None:
+            entry = _LIVE_TRANSACTIONS.get(transaction_id)
+            if entry is None:
+                return {
+                    "transaction_id": transaction_id,
+                    "mode": "PSK",
+                    "status": "pending",
+                    "message_length_chars": None,
+                    "sender": {"status": "pending", "stage_timings": {}},
+                    "receiver": {"status": "pending", "stage_timings": {}},
+                    "llm_execution_type": "N/A",
+                    "recovery_status": "pending",
+                    "end_to_end_ms": None,
+                    "updated_at": time.time(),
+                }
+            return dict(entry)
+        if not _LIVE_TRANSACTIONS:
+            return {
+                "transaction_id": None,
+                "mode": "PSK",
+                "status": "pending",
+                "message_length_chars": None,
+                "sender": {"status": "pending", "stage_timings": {}},
+                "receiver": {"status": "pending", "stage_timings": {}},
+                "llm_execution_type": "N/A",
+                "recovery_status": "pending",
+                "end_to_end_ms": None,
+                "updated_at": time.time(),
+            }
+        latest = max(_LIVE_TRANSACTIONS.values(), key=lambda value: value.get("updated_at", 0.0))
+        return dict(latest)
 
 
 def create_ecdhe_session(
@@ -779,6 +877,7 @@ def run_sender(
     topic: object,
     mode: object = "PSK",
     ecdhe_session_id: object = None,
+    transaction_id: object = None,
     temperature: object = 0.7,
     top_k: object = 20,
     on_stage: Callable[[str, dict[str, Any]], None] | None = None,
@@ -787,6 +886,7 @@ def run_sender(
 
     message = _require_text(message, "Secret message")
     topic = _require_text(topic, "Carrier topic")
+    sender_transaction_id = _new_transaction_id("PSK" if str(mode).upper() == "PSK" else "ECDHE", transaction_id)
     if not isinstance(mode, str) or mode not in {"PSK", "ECDHE"}:
         raise DemoPipelineError("input", "Key-establishment mode must be PSK or ECDHE.")
     if mode == "PSK":
@@ -802,6 +902,8 @@ def run_sender(
 
     plaintext = message.encode("utf-8")
     mapped_length = (len(plaintext) + 16) * 2
+    sender_started = time.perf_counter()
+    stage_timings: dict[str, float] = {}
     if mapped_length > MAX_MAPPED_CHARACTERS:
         raise DemoPipelineError(
             "input",
@@ -812,18 +914,30 @@ def run_sender(
         ecdhe_session: _ECDHESession | None = None
         claimed_session_id: str | None = None
         if mode == "PSK":
+            key_derivation_started = time.perf_counter()
             salt = generate_salt()
             dk1, dk2 = derive_keys(password, salt)
+            stage_timings["key_derivation_ms"] = (time.perf_counter() - key_derivation_started) * 1000.0
         else:
+            key_derivation_started = time.perf_counter()
             claimed_session_id, ecdhe_session = _claim_ecdhe_sender_session(
                 ecdhe_session_id
             )
+            if claimed_session_id and transaction_id is None:
+                sender_transaction_id = claimed_session_id
             salt = ecdhe_session.salt
             dk1, dk2 = ecdhe_session.sender_dk1, ecdhe_session.sender_dk2
+            stage_timings["key_derivation_ms"] = (time.perf_counter() - key_derivation_started) * 1000.0
         associated_data = payload_associated_data(mapped_length)
+        encryption_started = time.perf_counter()
         encrypted = encrypt(plaintext, dk1, associated_data)
+        stage_timings["encryption_ms"] = (time.perf_counter() - encryption_started) * 1000.0
+        payload_started = time.perf_counter()
         mapped = aead_to_character_sequence(encrypted["enc"])
+        stage_timings["payload_transformation_ms"] = (time.perf_counter() - payload_started) * 1000.0
+        positions_started = time.perf_counter()
         positions = positions_for_payload(dk2, len(mapped))
+        stage_timings["position_generation_ms"] = (time.perf_counter() - positions_started) * 1000.0
     except DemoPipelineError:
         raise
     except (TypeError, ValueError, OverflowError) as error:
@@ -920,6 +1034,7 @@ def run_sender(
 
         generator = LLMGenerator()
         embedder = EmbedderLLM(llm_generator=generator)
+        embedding_started = time.perf_counter()
 
         current_embedding_event: dict[str, object] = {}
 
@@ -1073,6 +1188,7 @@ def run_sender(
                 progress_event_callback=report_embedding_event,
             )
         finally:
+            stage_timings["llm_embedding_ms"] = (time.perf_counter() - embedding_started) * 1000.0
             try:
                 _finish_weight_progress_line()
             finally:
@@ -1127,6 +1243,8 @@ def run_sender(
             failure_message,
         ) from error
 
+    llm_execution_type = "real"
+    verification_started = time.perf_counter()
     actual_positions = result.positions
     try:
         embedded_ok = EmbedderLLM.verify_embedding(
@@ -1156,6 +1274,7 @@ def run_sender(
         )
     if recovered_plaintext != plaintext:
         raise DemoPipelineError("verification", "Recovered bytes did not match the original message.")
+    stage_timings["sender_verification_ms"] = (time.perf_counter() - verification_started) * 1000.0
 
     stats = getattr(embedder, "_embedding_stats", {})
     stages["embedding"] = {
@@ -1195,13 +1314,48 @@ def run_sender(
             mapped_length=len(mapped),
         )
 
+    sender_duration_ms = (time.perf_counter() - sender_started) * 1000.0
+    stage_timings["llm_embedding_ms"] = (
+        stage_timings.get("llm_embedding_ms", 0.0)
+        if "llm_embedding_ms" in stage_timings
+        else 0.0
+    )
+    sender_metrics = {
+        "status": "success",
+        "mode": mode,
+        "transaction_id": sender_transaction_id,
+        "model": str(generator.model_name),
+        "message_length_chars": len(message),
+        "llm_execution_type": llm_execution_type,
+        "stage_timings": stage_timings,
+        "end_to_end_ms": sender_duration_ms,
+    }
+    _update_live_transaction(
+        sender_transaction_id,
+        mode=mode,
+        sender={
+            "status": "success",
+            "mode": mode,
+            "transaction_id": sender_transaction_id,
+            "model": str(generator.model_name),
+            "message_length_chars": len(message),
+            "llm_execution_type": llm_execution_type,
+            "stage_timings": stage_timings,
+            "end_to_end_ms": sender_duration_ms,
+        },
+        llm_execution_type=llm_execution_type,
+        message_length_chars=len(message),
+        end_to_end_ms=sender_duration_ms,
+    )
     return {
+        "transaction_id": sender_transaction_id,
         "mode": mode,
         "model": str(generator.model_name),
         "session": {
             "salt_hex": salt.hex(),
             "nonce_hex": encrypted["nonce"].hex(),
             "mapped_length": len(mapped),
+            "transaction_id": sender_transaction_id,
             **(
                 {"ecdhe_session_id": claimed_session_id}
                 if claimed_session_id is not None
@@ -1209,6 +1363,7 @@ def run_sender(
             ),
         },
         "stages": stages,
+        "metrics": sender_metrics,
     }
 
 
@@ -1221,11 +1376,14 @@ def run_receiver(
     mapped_length: object = None,
     mode: object = "PSK",
     ecdhe_session_id: object = None,
+    transaction_id: object = None,
+    expected_message: object = None,
     on_stage: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Regenerate positions, extract the payload, and authenticate it."""
 
     carrier_text = _require_text(carrier_text, "Received carrier text")
+    receiver_transaction_id = _new_transaction_id("PSK" if str(mode).upper() == "PSK" else "ECDHE", transaction_id or ecdhe_session_id)
     if not isinstance(mode, str) or mode not in {"PSK", "ECDHE"}:
         raise DemoPipelineError("input", "Key-establishment mode must be PSK or ECDHE.")
     if mode == "PSK":
@@ -1242,6 +1400,8 @@ def run_receiver(
         or mapped_length > MAX_MAPPED_CHARACTERS
     ):
         raise DemoPipelineError("input", "Mapped payload length is invalid.")
+    receiver_started = time.perf_counter()
+    stage_timings: dict[str, float] = {}
     if mode == "PSK":
         try:
             salt = bytes.fromhex(salt_hex)
@@ -1259,6 +1419,7 @@ def run_receiver(
         {"status": "running", "message": "Preparing receiver key material."},
     )
     try:
+        key_derivation_started = time.perf_counter()
         if mode == "PSK":
             dk1, dk2 = derive_keys(password, salt)
         else:
@@ -1272,6 +1433,7 @@ def run_receiver(
         if len(nonce) != 12:
             raise ValueError("invalid nonce length")
         associated_data = payload_associated_data(mapped_length)
+        stage_timings["key_derivation_ms"] = (time.perf_counter() - key_derivation_started) * 1000.0
     except DemoPipelineError as error:
         _emit_stage(
             on_stage,
@@ -1307,8 +1469,10 @@ def run_receiver(
         {"status": "running", "message": "Regenerating target positions and extracting the carrier."},
     )
     try:
+        extraction_started = time.perf_counter()
         positions = positions_for_payload(dk2, mapped_length)
         extracted = Extractor.extract(carrier_text, positions).upper()
+        stage_timings["extraction_ms"] = (time.perf_counter() - extraction_started) * 1000.0
         if len(extracted) != mapped_length:
             raise DemoPipelineError(
                 "extraction",
@@ -1340,7 +1504,9 @@ def run_receiver(
             "inverse_mapping",
             {"status": "running", "message": "Reconstructing tag || ciphertext from h4 characters."},
         )
+        inverse_mapping_started = time.perf_counter()
         recovered_enc = character_sequence_to_aead(extracted)
+        stage_timings["inverse_mapping_ms"] = (time.perf_counter() - inverse_mapping_started) * 1000.0
         if len(recovered_enc) < 16:
             raise ValueError("payload is shorter than an authentication tag")
     except (TypeError, ValueError) as error:
@@ -1368,6 +1534,7 @@ def run_receiver(
         {"status": "running", "message": "Authenticating and decrypting with AES-256-GCM."},
     )
     try:
+        authentication_started = time.perf_counter()
         plaintext = decrypt(
             ciphertext=ciphertext,
             tag=tag,
@@ -1375,13 +1542,38 @@ def run_receiver(
             dk1=dk1,
             associated_data=associated_data,
         )
+        stage_timings["authentication_ms"] = (time.perf_counter() - authentication_started) * 1000.0
     except AEADError:
+        stage_timings["authentication_ms"] = (time.perf_counter() - authentication_started) * 1000.0
         authentication_failure = {
             "status": "failed",
             "message": "AES-256-GCM authentication failed. No plaintext was recovered.",
         }
         _emit_stage(on_stage, "authentication", authentication_failure)
+        receiver_metrics = {
+            "status": "failed",
+            "transaction_id": receiver_transaction_id,
+            "mode": mode,
+            "recovery_status": "failed",
+            "stage_timings": stage_timings,
+            "end_to_end_ms": (time.perf_counter() - receiver_started) * 1000.0,
+        }
+        _update_live_transaction(
+            receiver_transaction_id,
+            mode=mode,
+            receiver={
+                "status": "failed",
+                "transaction_id": receiver_transaction_id,
+                "mode": mode,
+                "recovery_status": "failed",
+                "stage_timings": stage_timings,
+                "end_to_end_ms": receiver_metrics["end_to_end_ms"],
+            },
+            recovery_status="failed",
+            end_to_end_ms=receiver_metrics["end_to_end_ms"],
+        )
         return {
+            "transaction_id": receiver_transaction_id,
             "mode": mode,
             "stages": {
                 "key_derivation": {
@@ -1400,6 +1592,7 @@ def run_receiver(
                 "inverse_mapping": inverse_mapping_stage,
                 "authentication": authentication_failure,
             },
+            "metrics": receiver_metrics,
         }
 
     authentication_success = {
@@ -1408,7 +1601,34 @@ def run_receiver(
         "plaintext": plaintext.decode("utf-8"),
     }
     _emit_stage(on_stage, "authentication", authentication_success)
+    recovered_plaintext_text = plaintext.decode("utf-8")
+    recovery_status = "success"
+    if expected_message is not None:
+        recovery_status = "success" if recovered_plaintext_text == str(expected_message) else "mismatch"
+    receiver_metrics = {
+        "status": "success",
+        "transaction_id": receiver_transaction_id,
+        "mode": mode,
+        "recovery_status": recovery_status,
+        "stage_timings": stage_timings,
+        "end_to_end_ms": (time.perf_counter() - receiver_started) * 1000.0,
+    }
+    _update_live_transaction(
+        receiver_transaction_id,
+        mode=mode,
+        receiver={
+            "status": "success",
+            "transaction_id": receiver_transaction_id,
+            "mode": mode,
+            "recovery_status": recovery_status,
+            "stage_timings": stage_timings,
+            "end_to_end_ms": receiver_metrics["end_to_end_ms"],
+        },
+        recovery_status=recovery_status,
+        end_to_end_ms=receiver_metrics["end_to_end_ms"],
+    )
     return {
+        "transaction_id": receiver_transaction_id,
         "mode": mode,
         "stages": {
             "key_derivation": {
@@ -1427,6 +1647,7 @@ def run_receiver(
             "inverse_mapping": inverse_mapping_stage,
             "authentication": authentication_success,
         },
+        "metrics": receiver_metrics,
     }
 
 

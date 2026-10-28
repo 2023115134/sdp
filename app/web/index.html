@@ -195,6 +195,39 @@
       <div id="receiver-stage-output" class="receiver-results empty-state">Receiver extraction and authentication results will appear here. Plaintext is shown only after successful AES-GCM authentication.</div>
     </section>
 
+    <section class="panel live-transaction-panel" id="live-transaction-panel" aria-labelledby="live-transaction-heading">
+      <div class="section-heading">
+        <div>
+          <p class="section-number">05</p>
+          <h2 id="live-transaction-heading">Live Transaction Metrics</h2>
+        </div>
+        <span id="live-transaction-status" class="status-label pending" role="status" aria-live="polite">Pending</span>
+      </div>
+
+      <div id="live-transaction-metrics" class="metric-grid" aria-live="polite"></div>
+
+      <div class="table-card">
+        <div class="table-header">
+          <h3>Live stage timings</h3>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Stage</th>
+                <th>Sender</th>
+                <th>Receiver</th>
+                <th>End-to-end</th>
+              </tr>
+            </thead>
+            <tbody id="live-transaction-table-body">
+              <tr><td colspan="4" class="empty-state">No live transaction has run yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
     <section class="panel performance-panel" id="performance" aria-labelledby="performance-heading">
       <div class="section-heading">
         <div>

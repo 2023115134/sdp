@@ -15,6 +15,7 @@ from app.web_demo import (
     DemoPipelineError,
     create_ecdhe_session,
     get_demo_config,
+    get_live_transaction_metrics,
     run_receiver,
     run_sender,
 )
@@ -31,6 +32,9 @@ class DemoRequestHandler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path == "/api/config":
             self._send_json(200, get_demo_config())
+            return
+        if path == "/api/live-transaction":
+            self._send_json(200, get_live_transaction_metrics())
             return
 
         static_files = {
@@ -60,6 +64,7 @@ class DemoRequestHandler(BaseHTTPRequestHandler):
             "/api/receiver/stream",
             "/api/performance/benchmark",
             "/api/performance/export",
+            "/api/live-transaction",
         }:
             self._send_json(404, {"error": "Not found."})
             return
@@ -74,6 +79,10 @@ class DemoRequestHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/receiver/stream":
                 self._stream_receiver(payload)
+                return
+            if path == "/api/live-transaction":
+                transaction_id = payload.get("transaction_id")
+                self._send_json(200, get_live_transaction_metrics(transaction_id))
                 return
             if path == "/api/performance/benchmark":
                 report = run_benchmark(

@@ -17,8 +17,11 @@ const benchmarkError = document.getElementById("benchmark-error");
 const benchmarkMetrics = document.getElementById("benchmark-metrics");
 const benchmarkSummaryTableBody = document.querySelector("#benchmark-summary-table tbody");
 const benchmarkTableBody = document.querySelector("#benchmark-table tbody");
+const liveTransactionMetrics = document.getElementById("live-transaction-metrics");
+const liveTransactionTableBody = document.querySelector("#live-transaction-table-body");
 let benchmarkReport = null;
 let benchmarkCsv = "";
+let latestLiveTransaction = null;
 let sessionMetadata = null;
 let currentEmbeddingEvent = {};
 let lastEmbeddingProgress = {};
@@ -661,6 +664,18 @@ async function copyText(text, button) {
 
 function showSenderResult(data) {
   sessionMetadata = data.session;
+  if (data.metrics) {
+    renderLiveTransactionMetrics({
+      transaction_id: data.transaction_id || sessionMetadata?.transaction_id || null,
+      mode: data.mode,
+      status: data.metrics.status || "success",
+      llm_execution_type: data.metrics.llm_execution_type || "real",
+      recovery_status: "pending",
+      message_length_chars: data.metrics.message_length_chars || 0,
+      sender: data.metrics,
+      receiver: { status: "pending", stage_timings: {}, end_to_end_ms: null },
+    });
+  }
   for (const [name, stage] of Object.entries(data.stages)) {
     if (!senderOutput.querySelector(`[data-output-stage="${name}"]`)) {
       updateSenderStage(name, stage);
@@ -871,9 +886,21 @@ receiverButton.addEventListener("click", async () => {
       salt_hex: sessionMetadata.salt_hex,
       nonce_hex: sessionMetadata.nonce_hex,
       mapped_length: sessionMetadata.mapped_length,
+      transaction_id: sessionMetadata.transaction_id || null,
+      expected_message: document.getElementById("secret-message").value,
       ...(mode === "ECDHE"
         ? { ecdhe_session_id: sessionMetadata.ecdhe_session_id }
         : {}),
+    });
+    renderLiveTransactionMetrics({
+      transaction_id: result.transaction_id || sessionMetadata.transaction_id || null,
+      mode,
+      status: result.metrics && result.metrics.status ? result.metrics.status : "pending",
+      llm_execution_type: latestLiveTransaction && latestLiveTransaction.llm_execution_type ? latestLiveTransaction.llm_execution_type : "real",
+      recovery_status: result.metrics && result.metrics.recovery_status ? result.metrics.recovery_status : "pending",
+      message_length_chars: sessionMetadata && sessionMetadata.mapped_length ? Math.round(sessionMetadata.mapped_length / 2) : null,
+      sender: latestLiveTransaction && latestLiveTransaction.sender ? latestLiveTransaction.sender : {},
+      receiver: result.metrics || { status: "pending", stage_timings: {}, end_to_end_ms: null },
     });
     const stages = result.stages;
     renderStages(receiverOutput, stages, receiverStageTitles, receiverFields);
@@ -1063,6 +1090,106 @@ function buildMetricCards(report) {
       `,
     )
     .join("");
+}
+
+function renderLiveTransactionMetrics(metrics) {
+  latestLiveTransaction = metrics || null;
+  const liveStatus = document.getElementById("live-transaction-status");
+  const sender = latestLiveTransaction && latestLiveTransaction.sender ? latestLiveTransaction.sender : {};
+  const receiver = latestLiveTransaction && latestLiveTransaction.receiver ? latestLiveTransaction.receiver : {};
+  const senderDur = sender.end_to_end_ms;
+  const receiverDur = receiver.end_to_end_ms;
+  const endToEnd = Number.isFinite(senderDur) && Number.isFinite(receiverDur)
+    ? senderDur + receiverDur
+    : Number.isFinite(senderDur)
+      ? senderDur
+      : Number.isFinite(receiverDur)
+        ? receiverDur
+        : null;
+  const statusText = latestLiveTransaction
+    ? (latestLiveTransaction.status || "pending")
+    : "pending";
+  liveStatus.textContent = statusText.charAt(0).toUpperCase() + statusText.slice(1);
+  liveStatus.className = `status-label ${statusText === "success" ? "success" : statusText === "failed" ? "failed" : statusText === "running" ? "running" : "pending"}`;
+
+  const cards = [
+    {
+      label: "Transaction ID",
+      value: latestLiveTransaction && latestLiveTransaction.transaction_id ? latestLiveTransaction.transaction_id : "N/A",
+      meta: "Shared sender/receiver correlation",
+    },
+    {
+      label: "Mode",
+      value: latestLiveTransaction && latestLiveTransaction.mode ? latestLiveTransaction.mode : "N/A",
+      meta: "PSK or ECDHE pipeline",
+    },
+    {
+      label: "Sender",
+      value: sender.status ? sender.status : "pending",
+      meta: sender.end_to_end_ms ? formatMs(sender.end_to_end_ms) : "No sender timing yet",
+    },
+    {
+      label: "Receiver",
+      value: receiver.status ? receiver.status : "pending",
+      meta: receiver.end_to_end_ms ? formatMs(receiver.end_to_end_ms) : "No receiver timing yet",
+    },
+    {
+      label: "LLM execution",
+      value: latestLiveTransaction && latestLiveTransaction.llm_execution_type ? latestLiveTransaction.llm_execution_type : (sender.llm_execution_type || "N/A"),
+      meta: "Live LLM vs mock or fallback",
+    },
+    {
+      label: "Recovery",
+      value: latestLiveTransaction && latestLiveTransaction.recovery_status ? latestLiveTransaction.recovery_status : (receiver.recovery_status || "pending"),
+      meta: latestLiveTransaction && latestLiveTransaction.message_length_chars ? `${latestLiveTransaction.message_length_chars} chars` : "No message length yet",
+    },
+    {
+      label: "End-to-end",
+      value: endToEnd === null ? "N/A" : formatMs(endToEnd),
+      meta: "Sender + receiver timing",
+    },
+  ];
+  if (!latestLiveTransaction) {
+    liveTransactionMetrics.innerHTML = '<article class="metric-card"><div class="metric-label">Live transaction</div><div class="metric-value">Pending</div><div class="metric-meta">Run the sender and receiver to populate actual transaction timings.</div></article>';
+    if (liveTransactionTableBody) {
+      liveTransactionTableBody.innerHTML = '<tr><td colspan="4" class="empty-state">No live transaction has run yet.</td></tr>';
+    }
+    return;
+  }
+  liveTransactionMetrics.innerHTML = cards
+    .map((card) => `
+      <article class="metric-card">
+        <div class="metric-label">${card.label}</div>
+        <div class="metric-value">${card.value}</div>
+        <div class="metric-meta">${card.meta}</div>
+      </article>
+    `)
+    .join("");
+
+  if (liveTransactionTableBody) {
+    const senderTiming = sender.stage_timings || {};
+    const receiverTiming = receiver.stage_timings || {};
+    const rows = [
+      ["Key derivation", senderTiming.key_derivation_ms, receiverTiming.key_derivation_ms, endToEnd],
+      ["AES-GCM encryption", senderTiming.encryption_ms, "N/A", "N/A"],
+      ["Payload transformation", senderTiming.payload_transformation_ms, "N/A", "N/A"],
+      ["SHAKE-128 positions", senderTiming.position_generation_ms, "N/A", "N/A"],
+      ["LLM embedding", senderTiming.llm_embedding_ms, "N/A", "N/A"],
+      ["Extraction", "N/A", receiverTiming.extraction_ms, "N/A"],
+      ["AES-GCM decryption", "N/A", receiverTiming.authentication_ms, "N/A"],
+      ["Sender/receiver total", senderDur, receiverDur, endToEnd],
+    ];
+    liveTransactionTableBody.innerHTML = rows
+      .map(([label, senderValue, receiverValue, totalValue]) => `
+        <tr>
+          <td>${label}</td>
+          <td>${Number.isFinite(senderValue) ? formatMs(senderValue) : "N/A"}</td>
+          <td>${Number.isFinite(receiverValue) ? formatMs(receiverValue) : "N/A"}</td>
+          <td>${Number.isFinite(totalValue) ? formatMs(totalValue) : "N/A"}</td>
+        </tr>
+      `)
+      .join("");
+  }
 }
 
 function getProfileSummaryRows(report) {
