@@ -1022,34 +1022,33 @@ function buildMetricCards(report) {
   const profileName = getBenchmarkProfileName(report);
   const cards = [
     {
+      label: "Successful recovery",
+      value: Number.isFinite(summary.recovery_rate) ? formatRate(summary.recovery_rate) : "—",
+      meta: `${summary.successful_trials || 0}/${summary.total_trials || 0} trials recovered`,
+    },
+    {
       label: "Median latency",
-      value: formatMs(summary.median_end_to_end_ms ?? 0),
-      meta: `${profileName} profile · median end-to-end`,
-    },
-    {
-      label: "Mean latency",
-      value: formatMs(summary.mean_end_to_end_ms ?? 0),
-      meta: `Across ${summary.total_trials || 0} trials`,
-    },
-    {
-      label: "Recovery rate",
-      value: formatRate(summary.recovery_rate ?? 0),
-      meta: `${summary.successful_trials || 0}/${summary.total_trials || 0} successful rounds`,
+      value: Number.isFinite(summary.median_end_to_end_ms) ? formatMs(summary.median_end_to_end_ms) : "—",
+      meta: `${profileName} profile · end-to-end`,
     },
     {
       label: "Embedding throughput",
-      value: `${formatNumber(summary.mean_embedding_throughput ?? 0, 1)} chars/s`,
-      meta: `Mean embed rate`,
+      value: Number.isFinite(summary.mean_embedding_throughput)
+        ? `${formatNumber(summary.mean_embedding_throughput, 1)} chars/s`
+        : "—",
+      meta: "Average embed rate",
     },
     {
-      label: "Carrier length",
-      value: `${formatNumber(summary.average_carrier_length_chars ?? 0, 1)} chars`,
-      meta: `Avg. public carrier`,
+      label: "Public carrier size",
+      value: Number.isFinite(summary.average_carrier_length_chars)
+        ? `${formatNumber(summary.average_carrier_length_chars, 1)} chars`
+        : "—",
+      meta: "Mean carrier length",
     },
     {
-      label: "Auth-negatives",
-      value: `${authSummary.passed}/${authSummary.total || 0}`,
-      meta: authSummary.total ? "rejections blocked" : "No checks recorded",
+      label: "Auth rejection coverage",
+      value: authSummary.total ? `${authSummary.passed}/${authSummary.total}` : "—",
+      meta: authSummary.total ? "negative checks blocked" : "No auth checks recorded",
     },
   ];
 

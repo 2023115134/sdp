@@ -23,6 +23,47 @@ _MAX_CARRIER_LENGTH = 100_000
 _MAX_EMBED_CANDIDATE_ATTEMPTS = 75_000
 
 
+def _hex_to_h4_sequence(segment: bytes) -> str:
+    """Apply a 1:1 nibble-to-h4 mapping for exact sender/receiver symmetry.
+
+    A raw segment is first rendered to hex. Each hex digit is a 4-bit value in
+    the range 0..15, and each such nibble is mapped to exactly one h4 symbol.
+    This preserves one-to-one correspondence between the encoded hex digits and
+    the carrier characters instead of turning each ASCII hex byte into two h4
+    symbols.
+    """
+    if not isinstance(segment, (bytes, bytearray, memoryview)):
+        raise TypeError("segment must be bytes-like")
+
+    raw = bytes(segment)
+    hex_digits = raw.hex()
+    values = [int(ch, 16) for ch in hex_digits]
+    return CharacterMap().from_values(values)
+
+
+def _h4_to_hex_sequence(mapped: str, expected_length: int) -> bytes:
+    """Recover the original byte segment from the one-to-one h4 mapping."""
+    if not isinstance(mapped, str):
+        raise TypeError("mapped segment must be a string")
+
+    values = CharacterMap().to_values(mapped)
+    if len(values) != expected_length * 2:
+        raise ValueError(
+            "mapped segment length does not match the expected hexadecimal payload size"
+        )
+
+    hex_digits = "".join(f"{value:x}" for value in values)
+    try:
+        decoded = bytes.fromhex(hex_digits)
+    except ValueError as exc:
+        raise ValueError("mapped segment is not valid hexadecimal payload") from exc
+
+    if len(decoded) != expected_length:
+        raise ValueError("decoded segment length does not match the expected length")
+
+    return decoded
+
+
 def split_public_key(public_key: bytes) -> list[bytes]:
     """Split a raw X25519 public key into five ordered carrier payloads."""
 
@@ -100,7 +141,7 @@ def embed_public_key_segment(
     if not isinstance(topic, str) or not topic.strip():
         raise ValueError("topic must be a non-empty string")
 
-    mapped = CharacterMap().encode(segment.hex())
+    mapped = _hex_to_h4_sequence(segment)
     positions = generate_positions(
         key_material=_position_key(position_key, role, segment_index),
         number_of_positions=len(mapped),
@@ -173,7 +214,7 @@ def extract_public_key_segment(
         raise ValueError("received public-key carrier is out of handshake order")
 
     cover_text = message.get("cover_text")
-    expected_mapped_length = 4 * _expected_segment_length(expected_segment_index)
+    expected_hex_length = 2 * _expected_segment_length(expected_segment_index)
     if not isinstance(cover_text, str) or not cover_text:
         raise ValueError("public-key carrier text must be non-empty")
     positions = generate_positions(
@@ -182,7 +223,7 @@ def extract_public_key_segment(
             expected_role,
             expected_segment_index,
         ),
-        number_of_positions=expected_mapped_length,
+        number_of_positions=expected_hex_length,
         offset_do=32,
         max_story_length=_MAX_CARRIER_LENGTH,
         min_gap=1,
@@ -191,9 +232,8 @@ def extract_public_key_segment(
         raise ValueError("public-key carrier text is too short for extracted positions")
 
     mapped = Extractor.extract(cover_text, positions).upper()
-    encoded_segment = CharacterMap().decode(mapped)
     try:
-        segment = bytes.fromhex(encoded_segment)
+        segment = _h4_to_hex_sequence(mapped, _expected_segment_length(expected_segment_index))
     except ValueError as error:
         raise ValueError("extracted public-key segment is not valid hexadecimal") from error
     if len(segment) != _expected_segment_length(expected_segment_index):

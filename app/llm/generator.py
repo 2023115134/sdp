@@ -77,6 +77,12 @@ class LLMGenerator:
             or DEFAULT_LLM_CONFIG.device
         ).strip().lower()
         self.device = self._resolve_device(requested_device)
+        self._allow_cpu_fallback = (
+            os.getenv("LLM_ALLOW_CPU_FALLBACK", "0")
+            .strip()
+            .lower()
+            not in {"", "0", "false", "no", "off"}
+        )
 
         self.seed = (
             seed
@@ -130,6 +136,43 @@ class LLMGenerator:
 
         return requested_device
 
+    @staticmethod
+    def _is_cuda_oom_error(exc: BaseException) -> bool:
+        """Detect CUDA allocation failures so we can gracefully retry on CPU."""
+        message = str(exc).lower()
+        return any(
+            marker in message
+            for marker in (
+                "out of memory",
+                "cuda out of memory",
+                "memory allocation failed",
+                "cudacachingallocator",
+            )
+        )
+
+    def _fallback_to_cpu(self, context: str) -> None:
+        """Retry the current backend on CPU when CUDA has run out of memory."""
+        if not self.device.startswith("cuda"):
+            return
+
+        if not self._allow_cpu_fallback:
+            logger.warning(
+                "CUDA memory exhausted during %s for %s; keeping the model on GPU "
+                "because LLM_ALLOW_CPU_FALLBACK is disabled.",
+                context,
+                self.model_name,
+            )
+            return
+
+        logger.warning(
+            "CUDA memory exhausted during %s for %s; retrying on CPU.",
+            context,
+            self.model_name,
+        )
+        self.device = "cpu"
+        self._tokenizer = None
+        self._model = None
+
     def _load_backend(self) -> None:
         """
         Load tokenizer and model lazily.
@@ -167,6 +210,25 @@ class LLMGenerator:
             except RuntimeError:
                 pass
 
+        if self.device.startswith("cuda"):
+            try:
+                cuda_index = int(self.device.split(":")[-1]) if ":" in self.device else 0
+                torch.cuda.set_device(cuda_index)
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+        load_kwargs: dict[str, object] = {
+            "low_cpu_mem_usage": True,
+        }
+        if self.device.startswith("cuda"):
+            gpu_dtype = (
+                torch.bfloat16
+                if hasattr(torch.cuda, "is_bf16_supported") and torch.cuda.is_bf16_supported()
+                else torch.float16
+            )
+            load_kwargs["dtype"] = gpu_dtype
+
         logger.info(
             "Loading tokenizer: %s",
             self.model_name,
@@ -185,10 +247,18 @@ class LLMGenerator:
 
             model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
-                low_cpu_mem_usage=True,
+                **load_kwargs,
             )
 
         except Exception as exc:
+            if self.device.startswith("cuda") and self._is_cuda_oom_error(exc):
+                if self._allow_cpu_fallback:
+                    self._fallback_to_cpu("model load")
+                    return self._load_backend()
+                raise RuntimeError(
+                    f"CUDA out of memory while initializing '{self.model_name}' on GPU. "
+                    "Free some VRAM or set LLM_DEVICE=cpu explicitly."
+                ) from exc
 
             logger.exception(
                 "Failed to load model."
@@ -276,7 +346,14 @@ class LLMGenerator:
                 "no_repeat_ngram_size must be >= 0"
             )
 
-        self._load_backend()
+        try:
+            self._load_backend()
+        except RuntimeError:
+            if self.device.startswith("cuda") and self._allow_cpu_fallback:
+                self._fallback_to_cpu("generation")
+                self._load_backend()
+            else:
+                raise
 
         tokenizer = self._tokenizer
         model = self._model
@@ -418,7 +495,14 @@ class LLMGenerator:
         if cached is not None:
             return cached
 
-        self._load_backend()
+        try:
+            self._load_backend()
+        except RuntimeError:
+            if self.device.startswith("cuda") and self._allow_cpu_fallback:
+                self._fallback_to_cpu("token scoring")
+                self._load_backend()
+            else:
+                raise
 
         tokenizer = self._tokenizer
         model = self._model

@@ -1424,7 +1424,6 @@ class EmbedderLLM:
                 )
 
             if selected is not None:
-
                 _, candidate, _ = selected
                 return story + candidate.token
 
@@ -1483,13 +1482,35 @@ class EmbedderLLM:
                     _, candidate, _ = selected
                     return story + candidate.token
 
+            # If the model can almost reach the boundary but never emits a
+            # direct exact match, rescue the target by injecting the required
+            # character just as the token crosses the fixed position.
+            if distance_to_target <= self.DIRECT_FALLBACK_WINDOW:
+                boundary_candidates = before_next_position(candidates)
+                if character == " ":
+                    boundary_result = self._select_space_boundary_fallback(
+                        story=story,
+                        candidates=boundary_candidates,
+                        position=position,
+                        topic=topic,
+                    )
+                else:
+                    boundary_result = self._select_character_boundary_fallback(
+                        story=story,
+                        candidates=boundary_candidates,
+                        character=character,
+                        position=position,
+                        topic=topic,
+                    )
+                if boundary_result is not None:
+                    return boundary_result
+
             # ----------------------------------------------------------
             # No direct candidate.
             #
             # Select a normal natural continuation, but only if it
             # does not cross the target.
             # ----------------------------------------------------------
-
             if not normal_candidates:
                 if not getattr(self, "_last_failure_reason", ""):
                     self._last_failure_reason = "all candidates would cross the target"

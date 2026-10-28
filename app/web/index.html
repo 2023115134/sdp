@@ -242,6 +242,17 @@
 
       <div id="benchmark-metrics" class="metric-grid" aria-live="polite"></div>
 
+      <div class="metric-glossary" aria-label="Metric explanations">
+        <h3>Metric guide</h3>
+        <ul>
+          <li><strong>Successful recovery</strong> shows the share of trials that fully reconstruct the original plaintext. Use it to judge reliability under real embedding and extraction conditions.</li>
+          <li><strong>Median latency</strong> measures the median end-to-end processing time for each benchmark profile. Use it to compare speed while minimizing distortion from a few slow outliers.</li>
+          <li><strong>Embedding throughput</strong> reports how many characters the pipeline embeds per second. Use it to estimate scaling and performance for larger payloads.</li>
+          <li><strong>Public carrier size</strong> tracks the average generated carrier length. Use it to understand the steganographic overhead and text expansion relative to the secret payload.</li>
+          <li><strong>Auth rejection coverage</strong> counts how many integrity-failure checks are blocked. Use it to confirm that tampered ciphertext, mismatched keys, and malformed payloads are actively rejected.</li>
+        </ul>
+      </div>
+
       <div class="chart-grid">
         <article class="chart-card">
           <h3>Message size vs latency</h3>
@@ -269,11 +280,11 @@
           <table id="benchmark-summary-table">
             <thead>
               <tr>
-                <th>Message size</th>
+                <th>Profile</th>
                 <th>Median latency</th>
                 <th>Throughput</th>
-                <th>Recovery rate</th>
-                <th>Successful / total</th>
+                <th>Recovery</th>
+                <th>Success / total</th>
               </tr>
             </thead>
             <tbody>

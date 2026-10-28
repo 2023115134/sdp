@@ -133,6 +133,35 @@ def test_progress_callback_marks_character_embedded_after_validation(monkeypatch
     ]
 
 
+def test_boundary_fallback_rescues_target_character_at_fixed_position(monkeypatch):
+    class FakeCandidate:
+        def __init__(self, token, probability=0.9):
+            self.token = token
+            self.probability = probability
+
+    class FakeGenerator:
+        def get_next_token_candidates(self, prompt, top_k, temperature):
+            return [FakeCandidate("!D")]
+
+    embedder = EmbedderLLM(llm_generator=FakeGenerator())
+    monkeypatch.setattr(EmbedderLLM, "_select_embedding_candidate", lambda *args, **kwargs: None)
+    monkeypatch.setattr(EmbedderLLM, "_select_normal_candidate", lambda *args, **kwargs: None)
+
+    result = embedder._generate_to_position(
+        story="cat",
+        character="D",
+        position=4,
+        topic="quiet garden",
+        temperature=0.7,
+        top_k=40,
+        max_steps=1,
+        max_attempts=100,
+        attempt_counter=[0],
+    )
+
+    assert result == "cat!D"
+
+
 def test_progress_callback_does_not_report_invalid_character_as_embedded(monkeypatch):
     embedder = EmbedderLLM()
     monkeypatch.setattr(

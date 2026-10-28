@@ -51,32 +51,42 @@ AUTH_NEGATIVE_CHECKS = (
 
 
 def _synthetic_message(profile_name: str, trial_number: int, message_size_chars: int) -> bytes:
-    """Return a deterministic, non-secret benchmark message of the requested length."""
+    """Return a deterministic, realistic benchmark message aligned to the target payload size."""
     profile_prefix = {
-        "short": "bench-short",
-        "medium": "bench-medium",
-        "long": "bench-long",
+        "short": "short",
+        "medium": "medium",
+        "long": "long",
     }.get(profile_name, "bench")
-    words = (
-        "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega" 
-        "research demo carrier embedder extractor secure covert message benchmark"
-    ).split()
+    phrase_bank = (
+        "secure benchmark payload",
+        "covert channel transmission",
+        "realistic evaluation sample",
+        "ciphertext round trip check",
+        "documented sender receiver flow",
+        "prototype embedder extraction test",
+        "key derivation and decryption",
+        "carrier text validation routine",
+        "payload integrity and recovery",
+    )
+    fragments = []
+    sentence_index = 0
+    while len(" ".join(fragments)) < message_size_chars:
+        sentence = phrase_bank[sentence_index % len(phrase_bank)]
+        if fragments:
+            fragments.append(sentence)
+        else:
+            fragments.append(sentence)
+        sentence_index += 1
 
-    payload = []
-    while len("".join(payload)) < message_size_chars:
-        for word in words:
-            payload.append(word)
-            if len(" ".join(payload)) >= message_size_chars:
-                break
-        if len(" ".join(payload)) >= message_size_chars:
-            break
-
-    text = " ".join(payload)[:message_size_chars]
+    text = " ".join(fragments)[:message_size_chars]
     suffix = f"-{trial_number}-{profile_prefix}"
-    padded = (text + suffix).encode("utf-8")
-    if len(padded) >= message_size_chars:
-        return padded[:message_size_chars].rstrip(b" ") + b"x"
-    return padded.ljust(message_size_chars, b"x")
+    candidate = (text + suffix).strip()
+    if not candidate:
+        candidate = f"benchmark-{profile_prefix}-{trial_number}"
+    rendered = candidate.encode("utf-8")
+    if len(rendered) >= message_size_chars:
+        return rendered[:message_size_chars].rstrip(b" ") + b"x"
+    return rendered.ljust(message_size_chars, b"x")
 
 
 def _safe_error_summary(error: Exception | None) -> str:
@@ -376,10 +386,14 @@ def _run_trial(
         extracted = Extractor.extract(story, positions)
         extraction_ms = (time.perf_counter() - extraction_start) * 1000.0
 
+        enc_payload = character_sequence_to_aead(extracted)
+        if len(enc_payload) < 16:
+            raise ValueError("extracted mapped payload is too short to recover the authentication tag")
+
         decrypt_start = time.perf_counter()
         recovered_plaintext = decrypt(
-            ciphertext=character_sequence_to_aead(extracted)[16:],
-            tag=character_sequence_to_aead(extracted)[:16],
+            ciphertext=enc_payload[16:],
+            tag=enc_payload[:16],
             nonce=encrypted["nonce"],
             dk1=dk1,
             associated_data=associated_data,
