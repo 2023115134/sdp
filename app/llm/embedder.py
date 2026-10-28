@@ -31,6 +31,7 @@ Important:
 
 from __future__ import annotations
 
+import inspect
 import logging
 import math
 import random
@@ -2054,24 +2055,30 @@ class EmbedderLLM:
                 )
 
             character_attempt_counter = [0]
+            embed_kwargs = {
+                "story": story,
+                "character": character,
+                "position": position,
+                "topic": topic,
+                "temperature": temperature,
+                "top_k": top_k,
+                "max_retries": max_retries,
+                "max_steps": max_new_tokens * 4,
+                "max_attempts": max_attempts,
+                "attempt_counter": character_attempt_counter,
+            }
+            next_position = (
+                positions[index + 1]
+                if index + 1 < len(positions)
+                else None
+            )
+            if "next_position" in inspect.signature(
+                self._embed_one_character,
+            ).parameters:
+                embed_kwargs["next_position"] = next_position
+
             try:
-                story = self._embed_one_character(
-                    story=story,
-                    character=character,
-                    position=position,
-                    topic=topic,
-                    temperature=temperature,
-                    top_k=top_k,
-                    max_retries=max_retries,
-                    max_steps=max_new_tokens * 4,
-                    max_attempts=max_attempts,
-                    attempt_counter=character_attempt_counter,
-                    next_position=(
-                        positions[index + 1]
-                        if index + 1 < len(positions)
-                        else None
-                    ),
-                )
+                story = self._embed_one_character(**embed_kwargs)
             except RuntimeError as exc:
                 if not allow_adaptive_positions:
                     if verbose:

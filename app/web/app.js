@@ -11,6 +11,14 @@ const logList = document.getElementById("execution-log");
 const modeSelect = document.getElementById("key-mode");
 const senderPassword = document.getElementById("sender-password");
 const receiverPassword = document.getElementById("receiver-password");
+const benchmarkForm = document.getElementById("benchmark-form");
+const benchmarkStatus = document.getElementById("benchmark-status");
+const benchmarkError = document.getElementById("benchmark-error");
+const benchmarkMetrics = document.getElementById("benchmark-metrics");
+const benchmarkSummaryTableBody = document.querySelector("#benchmark-summary-table tbody");
+const benchmarkTableBody = document.querySelector("#benchmark-table tbody");
+let benchmarkReport = null;
+let benchmarkCsv = "";
 let sessionMetadata = null;
 let currentEmbeddingEvent = {};
 let lastEmbeddingProgress = {};
@@ -213,23 +221,23 @@ const senderStageTitles = {
   ecdhe_shared_secret: "ECDHE · Shared-secret agreement",
   ecdhe_key_confirmation: "ECDHE · Key confirmation",
   ecdhe_key_derivation: "ECDHE · PBKDF2 DK1/DK2 derivation",
-  key_establishment: "A · Key establishment",
-  pbkdf2: "B · PBKDF2 key derivation",
-  encryption: "C · AES-256-GCM encryption",
-  payload: "D · Payload construction",
-  mapping: "E · h4 character mapping",
-  positions: "F · SHAKE-128 positions",
-  embedding: "G · EmbedderLLM generation",
-  carrier: "H · Final carrier",
-  sender_verification: "Sender-side extraction and verification",
+  key_establishment: "Key establishment",
+  pbkdf2: "PBKDF2 key derivation",
+  encryption: "AES-256-GCM encryption",
+  payload: "Encrypted payload construction",
+  mapping: "Reversible h4 character mapping",
+  positions: "SHAKE-128 target positions",
+  embedding: "LLM-based embedding",
+  carrier: "Generated message carrier",
+  sender_verification: "Sender carrier verification",
 };
 const senderStageOrder = Object.keys(senderStageTitles);
 
 const receiverStageTitles = {
-  key_derivation: "J · Receiver key derivation",
-  extraction: "K · Position regeneration and extraction",
-  inverse_mapping: "L · Inverse mapping and reconstruction",
-  authentication: "M · Authenticated decryption",
+  key_derivation: "Receiver key establishment and PBKDF2 derivation",
+  extraction: "Payload extraction",
+  inverse_mapping: "Inverse mapping and payload reconstruction",
+  authentication: "AES-256-GCM authentication and decryption",
 };
 
 const senderFields = {
@@ -273,7 +281,6 @@ const senderFields = {
     ["Original plaintext", "plaintext"],
     ["Algorithm", "algorithm"],
     ["Nonce (hex)", "nonce_hex"],
-    ["AAD (hex)", "aad_hex"],
     ["Ciphertext (hex)", "ciphertext_hex"],
     ["Authentication tag (hex)", "tag_hex"],
     ["Ciphertext length", "ciphertext_length", "bytes"],
@@ -414,7 +421,7 @@ function resetPipeline() {
   document.querySelectorAll(".pipeline-track li").forEach((item) => {
     item.classList.remove("success", "failed", "running");
   });
-  setOverallStatus("Waiting for input", "pending");
+  setOverallStatus("Ready", "pending");
   updateEmbeddingProgress({});
 }
 
@@ -537,13 +544,18 @@ function updateSenderStage(name, data) {
     key_establishment: "key_establishment",
     pbkdf2: "pbkdf2",
     encryption: "encryption",
-    payload: "payload",
-    mapping: "mapping",
+    payload: "payload_mapping",
+    mapping: "payload_mapping",
     positions: "positions",
     embedding: "embedding",
-    carrier: "carrier",
+    carrier: "handoff",
   }[name];
-  if (pipelineStep) setPipelineStage(pipelineStep, data.status);
+  if (pipelineStep) {
+    setPipelineStage(
+      pipelineStep,
+      name === "carrier" && data.status === "success" ? "running" : data.status,
+    );
+  }
   if (name === "embedding") {
     updateEmbeddingProgress(data);
     if (data.status === "failed") {
@@ -562,11 +574,6 @@ function updateSenderStage(name, data) {
       ? `Embedded ${current}/${total}`
       : `Generating ${current}/${total}`;
     setOverallStatus(status, "running");
-  }
-  if (name === "sender_verification" && data.status === "success") {
-    for (const step of ["extraction", "inverse_mapping", "authentication", "plaintext"]) {
-      setPipelineStage(step, "success");
-    }
   }
   if (name === "carrier" && data.status === "success") {
     document.getElementById("carrier-empty").classList.add("hidden");
@@ -599,10 +606,15 @@ function updateReceiverStage(name, data) {
   if (["extraction", "inverse_mapping", "authentication"].includes(name)) {
     setPipelineStage(name, data.status);
   }
-  if (name === "key_derivation" && data.status === "running") {
-    setPipelineStage("key_establishment", "running");
-  } else if (name === "key_derivation" && data.status === "success") {
-    setPipelineStage("key_establishment", "success");
+  if (name === "key_derivation") {
+    setPipelineStage("key_establishment", data.status);
+    setPipelineStage("pbkdf2", data.status);
+  }
+  if (name === "extraction" && data.status === "success") {
+    setPipelineStage("positions", "success");
+  }
+  if (name === "authentication") {
+    setPipelineStage("verification", data.status);
   }
   if (data.status === "running" && data.message) {
     document.getElementById("receiver-status").textContent = data.message;
@@ -659,14 +671,11 @@ function showSenderResult(data) {
   document.getElementById("channel-status").textContent = "Carrier generated. Deliver it when ready.";
   document.getElementById("receiver-status").textContent = "Carrier ready. Deliver or edit the text, then run extraction.";
   document.getElementById("receiver-status").className = "receiver-status pending";
-  for (const name of ["key_establishment", "pbkdf2", "encryption", "payload", "mapping", "positions", "embedding", "carrier"]) {
-    setPipelineStage(name, "success");
-  }
-  for (const name of ["extraction", "inverse_mapping", "authentication", "plaintext"]) setPipelineStage(name, null);
 }
 
 function resetDemo() {
   senderForm.reset();
+  senderPassword.value = "";
   receiverPassword.value = "";
   sessionMetadata = null;
   clearPipelineResults();
@@ -758,7 +767,6 @@ senderForm.addEventListener("submit", async (event) => {
   senderButton.querySelector("span").textContent = "Running real sender pipeline…";
   resetPipeline();
   setOverallStatus("Sender running", "running");
-  setPipelineStage("key_establishment", "running");
   document.getElementById("channel-status").textContent = "Waiting for real LLM generation to finish.";
   addLog("Sender pipeline started. Password and plaintext are not written to the execution log.");
   let ecdheHandshakeComplete = false;
@@ -800,13 +808,14 @@ senderForm.addEventListener("submit", async (event) => {
       verification: "authentication",
     }[error.stage];
     if (progressStep) setPipelineStage(progressStep, "failed");
+    if (error.stage === "verification") setPipelineStage("verification", "failed");
     setOverallStatus("Sender failed", "failed");
     document.getElementById("channel-status").textContent = error.message;
     addLog(`Sender failed at ${error.stage || "pipeline"} stage: ${error.message}`);
   } finally {
     senderPassword.value = "";
     setBusy(false);
-    senderButton.querySelector("span").textContent = "Run complete sender";
+    senderButton.querySelector("span").textContent = "Run sender";
   }
 });
 
@@ -822,6 +831,7 @@ modeSelect.addEventListener("change", () => {
 deliverButton.addEventListener("click", () => {
   if (!sessionMetadata) return;
   receivedCarrier.value = carrierText.textContent;
+  setPipelineStage("handoff", "success");
   document.getElementById("channel-status").textContent = "Carrier text delivered to the receiver editor.";
   document.getElementById("receiver-status").textContent = modeSelect.value === "ECDHE"
     ? "Carrier delivered. Run receiver extraction with the established local ECDHE session."
@@ -843,6 +853,9 @@ receiverButton.addEventListener("click", async () => {
   }
   receiverOutput.replaceChildren();
   receiverOutput.className = "receiver-results";
+  for (const name of ["extraction", "inverse_mapping", "authentication", "verification"]) {
+    setPipelineStage(name, null);
+  }
   setBusy(true);
   receiverButton.textContent = "Running receiver pipeline…";
   document.getElementById("receiver-status").textContent = "Regenerating positions and verifying the extracted payload…";
@@ -875,14 +888,12 @@ receiverButton.addEventListener("click", async () => {
       document.getElementById("receiver-status").textContent = "Authentication succeeded. Plaintext recovered.";
       document.getElementById("receiver-status").className = "receiver-status success";
       setOverallStatus("End-to-end demo verified", "success");
-      for (const name of ["extraction", "inverse_mapping", "authentication", "plaintext"]) setPipelineStage(name, "success");
+      setPipelineStage("verification", "success");
       addLog("Receiver authenticated the payload and recovered plaintext.");
     } else {
       document.getElementById("receiver-status").textContent = stages.authentication.message;
       document.getElementById("receiver-status").className = "receiver-status failed";
-      for (const name of ["extraction", "inverse_mapping"]) setPipelineStage(name, "success");
-      setPipelineStage("authentication", "failed");
-      setPipelineStage("plaintext", "failed");
+      setPipelineStage("verification", "failed");
       setOverallStatus("Authentication failed · no plaintext", "failed");
       addLog("Receiver rejected the payload during AEAD authentication. No plaintext was returned.");
     }
@@ -900,7 +911,10 @@ receiverButton.addEventListener("click", async () => {
     receiverOutput.append(failure);
     document.getElementById("receiver-status").textContent = error.message;
     document.getElementById("receiver-status").className = "receiver-status failed";
-    if (error.stage === "key_derivation") setPipelineStage("key_establishment", "failed");
+    if (error.stage === "key_derivation") {
+      setPipelineStage("key_establishment", "failed");
+      setPipelineStage("pbkdf2", "failed");
+    }
     else if (error.stage === "extraction") setPipelineStage("extraction", "failed");
     else if (error.stage === "inverse_mapping") {
       setPipelineStage("extraction", "success");
@@ -908,13 +922,13 @@ receiverButton.addEventListener("click", async () => {
     } else {
       setPipelineStage("authentication", "failed");
     }
-    setPipelineStage("plaintext", "failed");
+    setPipelineStage("verification", "failed");
     setOverallStatus("Receiver failed · no plaintext", "failed");
     addLog(`Receiver failed at ${error.stage || "input"} stage: ${error.message}`);
   } finally {
     receiverPassword.value = "";
     setBusy(false);
-    receiverButton.innerHTML = 'Run receiver pipeline <span aria-hidden="true">→</span>';
+    receiverButton.textContent = "Run receiver";
   }
 });
 
@@ -926,7 +940,7 @@ document.getElementById("download-carrier").addEventListener("click", () => {
   const blob = new Blob([carrierText.textContent], { type: "text/plain;charset=utf-8" });
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
-  link.download = "llm-shield-carrier.txt";
+  link.download = "covertcomm-llm-carrier.txt";
   link.click();
   URL.revokeObjectURL(link.href);
   addLog("Carrier text downloaded.");
@@ -950,6 +964,475 @@ async function loadConfig() {
 
 document.getElementById("receiver-password").addEventListener("keydown", (event) => {
   if (event.key === "Enter") receiverButton.click();
+});
+
+function setBenchmarkStatus(text, status = "pending") {
+  benchmarkStatus.textContent = text;
+  benchmarkStatus.className = `status-label ${status}`;
+}
+
+function setBenchmarkError(message) {
+  if (!message) {
+    benchmarkError.textContent = "";
+    benchmarkError.classList.add("hidden");
+    return;
+  }
+  benchmarkError.textContent = message;
+  benchmarkError.classList.remove("hidden");
+}
+
+function formatMs(value) {
+  if (!Number.isFinite(value)) return "—";
+  return `${value.toFixed(2)} ms`;
+}
+
+function formatRate(value) {
+  if (!Number.isFinite(value)) return "—";
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+function formatNumber(value, digits = 2) {
+  if (!Number.isFinite(value)) return "—";
+  return Number(value).toFixed(digits);
+}
+
+function getBenchmarkProfileName(report) {
+  if (!report || !report.profile_results) return "short";
+  if (report.profile && report.profile !== "all") return report.profile;
+  const firstProfile = Object.keys(report.profile_results)[0];
+  return firstProfile || "short";
+}
+
+function getBenchmarkAuthSummary(report) {
+  const profiles = report && report.profile_results ? Object.values(report.profile_results) : [];
+  const summary = { passed: 0, total: 0 };
+  for (const profile of profiles) {
+    const checks = profile.auth_negative_tests || {};
+    for (const value of Object.values(checks)) {
+      summary.total += 1;
+      if (value) summary.passed += 1;
+    }
+  }
+  return summary;
+}
+
+function buildMetricCards(report) {
+  const summary = report && report.summary ? report.summary : {};
+  const authSummary = getBenchmarkAuthSummary(report);
+  const profileName = getBenchmarkProfileName(report);
+  const cards = [
+    {
+      label: "Median latency",
+      value: formatMs(summary.median_end_to_end_ms ?? 0),
+      meta: `${profileName} profile · median end-to-end`,
+    },
+    {
+      label: "Mean latency",
+      value: formatMs(summary.mean_end_to_end_ms ?? 0),
+      meta: `Across ${summary.total_trials || 0} trials`,
+    },
+    {
+      label: "Recovery rate",
+      value: formatRate(summary.recovery_rate ?? 0),
+      meta: `${summary.successful_trials || 0}/${summary.total_trials || 0} successful rounds`,
+    },
+    {
+      label: "Embedding throughput",
+      value: `${formatNumber(summary.mean_embedding_throughput ?? 0, 1)} chars/s`,
+      meta: `Mean embed rate`,
+    },
+    {
+      label: "Carrier length",
+      value: `${formatNumber(summary.average_carrier_length_chars ?? 0, 1)} chars`,
+      meta: `Avg. public carrier`,
+    },
+    {
+      label: "Auth-negatives",
+      value: `${authSummary.passed}/${authSummary.total || 0}`,
+      meta: authSummary.total ? "rejections blocked" : "No checks recorded",
+    },
+  ];
+
+  benchmarkMetrics.innerHTML = cards
+    .map(
+      (card) => `
+        <article class="metric-card">
+          <div class="metric-label">${card.label}</div>
+          <div class="metric-value">${card.value}</div>
+          <div class="metric-meta">${card.meta}</div>
+        </article>
+      `,
+    )
+    .join("");
+}
+
+function getProfileSummaryRows(report) {
+  const profileResults = report && report.profile_results ? report.profile_results : {};
+  const profileSpecs = report && report.metadata && report.metadata.profiles ? report.metadata.profiles : {
+    short: { message_size_chars: 32 },
+    medium: { message_size_chars: 128 },
+    long: { message_size_chars: 512 },
+  };
+  const orderedProfiles = ["short", "medium", "long"];
+  const rows = orderedProfiles
+    .map((profile) => {
+      const summary = profileResults[profile];
+      if (!summary) return null;
+      const totalTrials = Number(summary.total_trials || 0);
+      const messageSize = Number(
+        summary.message_size_chars ?? profileSpecs[profile]?.message_size_chars ?? 0,
+      );
+      return {
+        profile,
+        label: profile.charAt(0).toUpperCase() + profile.slice(1),
+        message_size_chars: messageSize,
+        median_latency_ms: Number(summary.median_end_to_end_ms ?? NaN),
+        mean_embedding_throughput: Number(summary.mean_embedding_throughput ?? NaN),
+        recovery_rate: Number(summary.recovery_rate ?? NaN),
+        successful_trials: Number(summary.successful_trials || 0),
+        total_trials: totalTrials,
+      };
+    })
+    .filter(Boolean);
+
+  if (rows.length) return rows;
+
+  const trialResults = report && report.trial_results ? report.trial_results : [];
+  const rowMap = new Map();
+  for (const row of trialResults) {
+    const profile = String(row.profile || "unknown");
+    if (!rowMap.has(profile)) {
+      rowMap.set(profile, {
+        profile,
+        label: profile,
+        message_size_chars: Number(row.message_size_chars || 0),
+        latency: [],
+        throughput: [],
+        successes: 0,
+        total: 0,
+      });
+    }
+    const bucket = rowMap.get(profile);
+    bucket.latency.push(Number(row.total_duration_ms || 0));
+    bucket.throughput.push(Number(row.embedding_throughput_chars_per_second || 0));
+    bucket.successes += row.success ? 1 : 0;
+    bucket.total += 1;
+  }
+
+  return [...rowMap.values()].map((entry) => ({
+    profile: entry.profile,
+    label: entry.label,
+    message_size_chars: entry.message_size_chars,
+    median_latency_ms: entry.latency.length ? (entry.latency.slice().sort((a, b) => a - b)[Math.floor((entry.latency.length - 1) / 2)]) : NaN,
+    mean_embedding_throughput: entry.throughput.length ? entry.throughput.reduce((sum, value) => sum + value, 0) / entry.throughput.length : NaN,
+    recovery_rate: entry.total ? entry.successes / entry.total : NaN,
+    successful_trials: entry.successes,
+    total_trials: entry.total,
+  }));
+}
+
+function renderScatterChart(svg, entries, { title, label, color = "#3c6487", highlight = "#1b3046", formatter = (value) => String(value), yUnit = "", hideZero = false } = {}) {
+  if (!svg) return;
+  const chartEntries = entries.filter((entry) => Number.isFinite(entry.x) && Number.isFinite(entry.value));
+  if (!chartEntries.length) {
+    svg.innerHTML = '<text x="160" y="92" text-anchor="middle" fill="#66788c" font-size="12">No benchmark data available.</text>';
+    return;
+  }
+
+  const width = 320;
+  const height = 180;
+  const padding = { top: 20, right: 20, bottom: 32, left: 42 };
+  const values = chartEntries.map((entry) => entry.value);
+  const minX = Math.min(...chartEntries.map((entry) => entry.x), 0);
+  const maxX = Math.max(...chartEntries.map((entry) => entry.x), 1);
+  const minY = hideZero ? Math.min(0, ...values, 0) : 0;
+  const maxY = Math.max(...values, 1);
+
+  const xScale = (value) => padding.left + ((value - minX) / Math.max(maxX - minX, 1)) * (width - padding.left - padding.right);
+  const yScale = (value) => height - padding.bottom - ((value - minY) / Math.max(maxY - minY, 1)) * (height - padding.top - padding.bottom);
+  const linePoints = chartEntries.map((entry) => `${xScale(entry.x)},${yScale(entry.value)}`).join(" ");
+  const singleProfileNotice = chartEntries.length === 1 ? '<text x="160" y="105" text-anchor="middle" fill="#66788c" font-size="10">Only 1 profile benchmarked — run more profiles to compare.</text>' : "";
+
+  svg.innerHTML = `
+    <g>
+      <rect x="0" y="0" width="${width}" height="${height}" fill="#f8fafb" rx="8"/>
+      <line x1="${padding.left}" y1="${height - padding.bottom}" x2="${width - padding.right}" y2="${height - padding.bottom}" stroke="#d3d9de" stroke-width="1"/>
+      <line x1="${padding.left}" y1="${padding.top}" x2="${padding.left}" y2="${height - padding.bottom}" stroke="#d3d9de" stroke-width="1"/>
+      <polyline points="${linePoints}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      ${chartEntries
+        .map((entry) => {
+          const cx = xScale(entry.x);
+          const cy = yScale(entry.value);
+          return `
+            <g>
+              <circle cx="${cx}" cy="${cy}" r="4.5" fill="${highlight}"/>
+              <text x="${cx}" y="${height - 12}" fill="#596a7c" font-size="9" text-anchor="middle">${entry.label}</text>
+              <text x="${cx}" y="${Math.max(cy - 9, 12)}" fill="#2d405a" font-size="9" text-anchor="middle">${formatter(entry.value)}</text>
+            </g>
+          `;
+        })
+        .join("")}
+      ${singleProfileNotice}
+      <text x="${width / 2}" y="${height - 8}" fill="#677684" font-size="10" text-anchor="middle">Message size (chars)</text>
+      <text x="18" y="18" fill="#677684" font-size="10">${label}</text>
+      <text x="${width / 2}" y="18" fill="#2d405a" font-size="11" text-anchor="middle">${title}</text>
+    </g>
+  `;
+}
+
+function renderLatencyChart(report) {
+  const entries = getProfileSummaryRows(report)
+    .filter((entry) => Number.isFinite(entry.median_latency_ms))
+    .map((entry) => ({ x: Number(entry.message_size_chars), value: Number(entry.median_latency_ms), label: entry.label }));
+  renderScatterChart(document.getElementById("latency-chart"), entries, {
+    title: "Median latency",
+    label: "Latency (ms)",
+    color: "#3c6487",
+    highlight: "#1b3046",
+    formatter: (value) => `${Number(value).toFixed(0)} ms`,
+  });
+}
+
+function renderThroughputChart(report) {
+  const entries = getProfileSummaryRows(report)
+    .filter((entry) => Number.isFinite(entry.mean_embedding_throughput))
+    .map((entry) => ({ x: Number(entry.message_size_chars), value: Number(entry.mean_embedding_throughput), label: entry.label }));
+  renderScatterChart(document.getElementById("throughput-chart"), entries, {
+    title: "Embedding throughput",
+    label: "Chars/s",
+    color: "#286248",
+    highlight: "#1d5840",
+    formatter: (value) => `${Number(value).toFixed(0)}`,
+  });
+}
+
+function renderRecoveryChart(report) {
+  const entries = getProfileSummaryRows(report)
+    .filter((entry) => Number.isFinite(entry.recovery_rate))
+    .map((entry) => ({ x: Number(entry.message_size_chars), value: Number(entry.recovery_rate), label: entry.label }));
+  renderScatterChart(document.getElementById("recovery-chart"), entries, {
+    title: "Recovery success rate",
+    label: "Recovery rate",
+    color: "#a85a2a",
+    highlight: "#8f4c27",
+    formatter: (value) => `${(value * 100).toFixed(0)}%`,
+  });
+}
+
+function renderStageChart(svg, report) {
+  if (!svg || !report || !report.profile_results) {
+    if (svg) {
+      svg.innerHTML = '<text x="320" y="110" text-anchor="middle" fill="#66788c" font-size="12">No stage timing data available.</text>';
+    }
+    return;
+  }
+
+  const stageDefinitions = [
+    ["key_derivation_ms", "Key Derivation", ["Key", "Derivation"]],
+    ["encryption_ms", "AES-GCM Encryption", ["AES-GCM", "Encryption"]],
+    ["payload_transformation_ms", "Payload Transformation", ["Payload", "Transformation"]],
+    ["position_generation_ms", "SHAKE-128 Position Generation", ["SHAKE-128", "Position", "Generation"]],
+    ["llm_embedding_ms", "LLM Embedding", ["LLM", "Embedding"]],
+    ["extraction_ms", "Extraction", ["Extraction"]],
+    ["decryption_ms", "AES-GCM Decryption", ["AES-GCM", "Decryption"]],
+  ];
+
+  const profileSummaries = Object.values(report.profile_results || {});
+  const stageValues = {};
+  for (const [stageKey] of stageDefinitions) {
+    const values = profileSummaries
+      .map((summary) => {
+        const stage = summary.stage_durations && summary.stage_durations[stageKey];
+        return Number(stage && Number.isFinite(stage.mean) ? stage.mean : NaN);
+      })
+      .filter((value) => Number.isFinite(value));
+    stageValues[stageKey] = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+  }
+
+  const entries = stageDefinitions.map(([stageKey, label, lines]) => ({
+    key: stageKey,
+    label,
+    lines,
+    value: stageValues[stageKey],
+  }));
+
+  const validEntries = entries.filter((entry) => Number.isFinite(entry.value));
+  if (!validEntries.length) {
+    svg.innerHTML = '<text x="320" y="110" text-anchor="middle" fill="#66788c" font-size="12">No stage timing data available.</text>';
+    return;
+  }
+
+  const width = 640;
+  const height = 560;
+  const plotLeft = 190;
+  const plotRight = 36;
+  const plotTop = 18;
+  const rowHeight = 62;
+  const plotWidth = width - plotLeft - plotRight;
+  const max = Math.max(...validEntries.map((entry) => entry.value), 1);
+
+  svg.innerHTML = `
+    <g>
+      <rect x="0" y="0" width="${width}" height="${height}" fill="#f8fafb" rx="8"/>
+      ${entries
+        .map((entry, index) => {
+          const y = plotTop + index * rowHeight + 18;
+          const x = plotLeft;
+          const hasValue = Number.isFinite(entry.value);
+          const barWidth = hasValue ? (entry.value / max) * plotWidth : 0;
+          const labelLines = entry.lines.length > 1 ? entry.lines : [entry.lines[0], ""];
+          return `
+            <g>
+              <text x="12" y="${y + 8}" fill="#2d405a" font-size="10" text-anchor="start">
+                ${labelLines
+                  .map((line, lineIndex) => `<tspan x="12" dy="${lineIndex === 0 ? 0 : 12}">${line}</tspan>`)
+                  .join("")}
+              </text>
+              ${hasValue ? `<rect x="${x}" y="${y}" width="${barWidth}" height="22" rx="4" fill="#3c6487"/>` : ""}
+              ${hasValue ? `<text x="${Math.min(x + barWidth + 10, width - 12)}" y="${y + 15}" fill="#2d405a" font-size="9">${entry.value.toFixed(0)} ms</text>` : `<text x="${x}" y="${y + 15}" fill="#7a8795" font-size="9">Unavailable</text>`}
+            </g>
+          `;
+        })
+        .join("")}
+      <text x="${width / 2}" y="${height - 10}" fill="#677684" font-size="10" text-anchor="middle">Stage</text>
+      <text x="18" y="18" fill="#677684" font-size="10">Time (ms)</text>
+    </g>
+  `;
+}
+
+function renderBenchmarkSummaryTable(report) {
+  const rows = getProfileSummaryRows(report);
+  if (!rows.length) {
+    benchmarkSummaryTableBody.innerHTML = '<tr><td colspan="5" class="empty-state">No benchmark summary data available.</td></tr>';
+    return;
+  }
+
+  benchmarkSummaryTableBody.innerHTML = rows
+    .map((row) => `
+      <tr>
+        <td>${row.label} · ${row.message_size_chars} chars</td>
+        <td>${Number.isFinite(row.median_latency_ms) ? formatMs(row.median_latency_ms) : "—"}</td>
+        <td>${Number.isFinite(row.mean_embedding_throughput) ? `${formatNumber(row.mean_embedding_throughput, 1)} chars/s` : "—"}</td>
+        <td>${Number.isFinite(row.recovery_rate) ? formatRate(row.recovery_rate) : "—"}</td>
+        <td>${Number.isFinite(row.successful_trials) ? `${row.successful_trials}/${row.total_trials || 0}` : "—"}</td>
+      </tr>
+    `)
+    .join("");
+}
+
+function renderBenchmarkTable(report) {
+  const rows = report && report.trial_results ? report.trial_results : [];
+  const profileName = getBenchmarkProfileName(report);
+  const filteredRows = report.profile === "all"
+    ? rows
+    : rows.filter((row) => row.profile === profileName);
+
+  if (!filteredRows.length) {
+    benchmarkTableBody.innerHTML = '<tr><td colspan="10" class="empty-state">No benchmark rows available for this selection.</td></tr>';
+    return;
+  }
+
+  benchmarkTableBody.innerHTML = filteredRows
+    .map(
+      (row) => `
+        <tr>
+          <td>${row.profile}</td>
+          <td>${row.mode}</td>
+          <td>${row.trial_number}</td>
+          <td>${row.llm_execution_type}</td>
+          <td>${row.message_size_chars}</td>
+          <td>${formatNumber(row.total_duration_ms ?? 0, 2)}</td>
+          <td>${row.success ? "pass" : "fail"}</td>
+          <td>${formatNumber(row.embedding_throughput_chars_per_second ?? 0, 1)}</td>
+          <td>${row.carrier_length_chars ?? 0}</td>
+          <td>${Object.values(row.auth_negative_tests || {}).every(Boolean) ? "blocked" : "partial"}</td>
+        </tr>
+      `,
+    )
+    .join("");
+}
+
+function renderBenchmarkReport(report) {
+  if (!report) return;
+  benchmarkReport = report;
+  benchmarkCsv = report.csv || "";
+  buildMetricCards(report);
+  renderLatencyChart(report);
+  renderThroughputChart(report);
+  renderRecoveryChart(report);
+  renderStageChart(document.getElementById("stage-chart"), report);
+  renderBenchmarkSummaryTable(report);
+  renderBenchmarkTable(report);
+  document.getElementById("benchmark-note").textContent = report.metadata?.llm_execution_note || "Real LLM measurements are reported when available; fallback/mock outcomes are marked explicitly.";
+}
+
+benchmarkForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const profile = document.getElementById("benchmark-profile").value;
+  const trials = Number(document.getElementById("benchmark-trials").value || 3);
+  const mode = document.getElementById("benchmark-mode").value;
+  const useMockLLM = document.getElementById("benchmark-use-mock-llm").checked;
+  const includeAuthNegativeTests = document.getElementById("benchmark-auth-tests").checked;
+
+  setBenchmarkStatus("Running", "running");
+  setBenchmarkError("");
+
+  try {
+    const response = await fetch("/api/performance/benchmark", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({
+        profile,
+        trials,
+        mode,
+        use_mock_llm: useMockLLM,
+        include_auth_negative_tests: includeAuthNegativeTests,
+      }),
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "The benchmark request failed.");
+    }
+    renderBenchmarkReport(data);
+    setBenchmarkStatus("Benchmark ready", "success");
+  } catch (error) {
+    setBenchmarkStatus("Benchmark failed", "failed");
+    setBenchmarkError(error.message || "Benchmark request failed.");
+  }
+});
+
+document.getElementById("benchmark-export").addEventListener("click", async () => {
+  if (!benchmarkReport) {
+    setBenchmarkError("Run a benchmark before exporting CSV.");
+    return;
+  }
+
+  try {
+    const response = await fetch("/api/performance/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({ report: benchmarkReport }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.error || "CSV export failed.");
+    }
+
+    const blob = await response.blob();
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.href = url;
+    link.download = `covertcomm-benchmark-${benchmarkReport.profile || "results"}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    addLog("Benchmark CSV exported.");
+  } catch (error) {
+    setBenchmarkError(error.message || "CSV export failed.");
+  }
 });
 
 loadConfig();

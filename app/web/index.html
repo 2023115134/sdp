@@ -3,26 +3,29 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f5f7fa">
-  <title>LLM-SHIELD | Communication Demo</title>
+  <meta name="theme-color" content="#f5f4f0">
+  <title>CovertComm-LLM | Secure Communication Research Demo</title>
   <link rel="stylesheet" href="/static/styles.css">
   <script src="/static/app.js" defer></script>
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="#" aria-label="LLM-SHIELD home">
-      <span><strong>LLM-SHIELD</strong><small>Local research demonstration</small></span>
+    <a class="brand" href="#" aria-label="CovertComm-LLM home">
+      <span><strong>CovertComm-LLM</strong><small>Secure and Covert Communication Through Linguistic Steganography</small></span>
     </a>
+    <nav class="topbar-nav" aria-label="Section navigation">
+      <a href="#performance">Performance Evaluation</a>
+    </nav>
     <div class="topbar-meta">
       <span class="local-indicator"><i aria-hidden="true"></i> Local session</span>
-      <span id="model-label" class="model-label">Loading model configuration…</span>
+      <span id="model-label" class="model-label">Qwen/Qwen2.5-0.5B-Instruct</span>
     </div>
   </header>
 
   <main>
     <section class="intro" aria-labelledby="page-title">
-      <h1 id="page-title">Secure communication demo</h1>
-      <p>Send an encrypted message through an LLM-generated carrier, then extract and authenticate it in the receiver.</p>
+      <h1 id="page-title">An LLM-Based Framework for Secure and Covert Communication</h1>
+      <p>Research demonstration of secure message encryption, linguistic steganography, and LLM-based carrier-text generation.</p>
     </section>
 
     <section class="panel" id="sender" aria-labelledby="sender-heading">
@@ -33,7 +36,7 @@
         </div>
         <span id="mode-pill" class="mode-label">PSK mode</span>
       </div>
-      <form id="sender-form">
+      <form id="sender-form" autocomplete="off">
         <div class="field">
           <label for="key-mode">Key-establishment mode</label>
           <select id="key-mode" name="mode">
@@ -49,7 +52,7 @@
         <div class="form-row">
           <div id="sender-password-field" class="field">
             <label for="sender-password">Sender PSK</label>
-            <input id="sender-password" name="password" type="password" autocomplete="new-password" required>
+            <input id="sender-password" type="password" autocomplete="new-password" required>
           </div>
           <div class="field">
             <label for="topic">Carrier topic</label>
@@ -96,13 +99,13 @@
       <div class="section-heading">
         <div>
           <p class="section-number">02</p>
-          <h2 id="progress-heading">Embedding Progress</h2>
+          <h2 id="progress-heading">Processing stages</h2>
         </div>
-        <span id="overall-status" class="status-label pending" role="status" aria-live="polite">Waiting for input</span>
+        <span id="overall-status" class="status-label pending" role="status" aria-live="polite">Ready</span>
       </div>
       <div class="progress-summary">
         <div class="progress-heading">
-          <span id="embedding-progress-label">No embedding started</span>
+          <span id="embedding-progress-label">Waiting for sender run</span>
           <span id="embedding-count">0 / 0 characters</span>
         </div>
         <progress id="embedding-meter" max="1" value="0" aria-label="Characters embedded"></progress>
@@ -114,27 +117,26 @@
         <p id="embedding-error" class="embedding-error hidden" role="alert"></p>
       </div>
 
-      <details class="pipeline-details">
-        <summary>Pipeline stages</summary>
+      <div class="pipeline-details">
+        <h3 class="pipeline-heading">Pipeline overview</h3>
         <ol class="pipeline-track" id="pipeline-track">
           <li data-step="key_establishment"><span>01</span><b>Key establishment</b><small id="key-mode-step">PSK</small></li>
-          <li data-step="pbkdf2"><span>02</span><b>PBKDF2</b><small>DK1 + DK2</small></li>
-          <li data-step="encryption"><span>03</span><b>AES-GCM</b><small>Encrypt</small></li>
-          <li data-step="payload"><span>04</span><b>Payload</b><small>tag || ciphertext</small></li>
-          <li data-step="mapping"><span>05</span><b>h4 mapping</b><small>Reversible</small></li>
-          <li data-step="positions"><span>06</span><b>SHAKE-128</b><small>Target positions</small></li>
-          <li data-step="embedding"><span>07</span><b>EmbedderLLM</b><small>Model generation</small></li>
-          <li data-step="carrier"><span>08</span><b>Carrier</b><small>Text output</small></li>
-          <li data-step="extraction"><span>09</span><b>Extraction</b><small>Receiver</small></li>
-          <li data-step="inverse_mapping"><span>10</span><b>Inverse map</b><small>Recover bytes</small></li>
-          <li data-step="authentication"><span>11</span><b>AEAD verify</b><small>Authenticate</small></li>
-          <li data-step="plaintext"><span>12</span><b>Plaintext</b><small>After verification</small></li>
+          <li data-step="pbkdf2"><span>02</span><b>PBKDF2 key derivation</b><small>Independent sender and receiver keys</small></li>
+          <li data-step="encryption"><span>03</span><b>AES-256-GCM encryption</b><small>Authenticated encryption</small></li>
+          <li data-step="payload_mapping"><span>04</span><b>Payload mapping</b><small>Tag, ciphertext, h4 mapping</small></li>
+          <li data-step="positions"><span>05</span><b>SHAKE-128 target positions</b><small>Position generation</small></li>
+          <li data-step="embedding"><span>06</span><b>LLM-based embedding</b><small>Carrier text generation</small></li>
+          <li data-step="handoff"><span>07</span><b>Carrier handoff</b><small>Public text channel</small></li>
+          <li data-step="extraction"><span>08</span><b>Payload extraction</b><small>Regenerated positions</small></li>
+          <li data-step="inverse_mapping"><span>09</span><b>Inverse mapping</b><small>Payload reconstruction</small></li>
+          <li data-step="authentication"><span>10</span><b>AES-GCM authentication &amp; decryption</b><small>Plaintext only after verification</small></li>
+          <li data-step="verification"><span>11</span><b>End-to-end verification</b><small>Sender and receiver checks</small></li>
         </ol>
-      </details>
+      </div>
 
       <details class="stage-details">
-        <summary>Pipeline output details</summary>
-        <p class="help-text">Values are returned by the project pipeline. Plaintext is shown by the receiver only after authentication.</p>
+        <summary>Sender stage results</summary>
+        <p class="help-text">Results appear as the backend reports them. Receiver plaintext is shown only after successful authentication.</p>
         <div id="sender-stage-output" class="stage-grid">
           <div class="empty-state">Sender stages will appear here when the pipeline runs.</div>
         </div>
@@ -193,6 +195,122 @@
       <div id="receiver-stage-output" class="receiver-results empty-state">Receiver extraction and authentication results will appear here. Plaintext is shown only after successful AES-GCM authentication.</div>
     </section>
 
+    <section class="panel performance-panel" id="performance" aria-labelledby="performance-heading">
+      <div class="section-heading">
+        <div>
+          <p class="section-number">05</p>
+          <h2 id="performance-heading">Performance Evaluation</h2>
+        </div>
+        <span id="benchmark-status" class="status-label pending" role="status" aria-live="polite">Idle</span>
+      </div>
+
+      <form id="benchmark-form" class="benchmark-form" autocomplete="off">
+        <div class="form-row benchmark-row">
+          <div class="field">
+            <label for="benchmark-profile">Synthetic profile</label>
+            <select id="benchmark-profile" name="profile">
+              <option value="all" selected>All profiles</option>
+              <option value="short">Short</option>
+              <option value="medium">Medium</option>
+              <option value="long">Long</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="benchmark-trials">Trials</label>
+            <input id="benchmark-trials" name="trials" type="number" min="1" max="25" step="1" value="3">
+          </div>
+          <div class="field">
+            <label for="benchmark-mode">Mode</label>
+            <select id="benchmark-mode" name="mode">
+              <option value="PSK">PSK</option>
+              <option value="ECDHE">ECDHE</option>
+            </select>
+          </div>
+        </div>
+        <div class="benchmark-checks">
+          <label class="checkbox-row"><input id="benchmark-use-mock-llm" type="checkbox"> Force mock-LLM fallback</label>
+          <label class="checkbox-row"><input id="benchmark-auth-tests" type="checkbox" checked> Include authentication-negative checks</label>
+        </div>
+        <div class="form-actions benchmark-actions">
+          <button class="button button-primary" id="run-benchmark" type="submit"><span>Run benchmark</span><span aria-hidden="true">→</span></button>
+          <button class="button button-secondary" id="benchmark-export" type="button">Export CSV</button>
+        </div>
+      </form>
+
+      <p id="benchmark-note" class="help-text">Real LLM measurements are reported when available; fallback/mock outcomes are marked explicitly.</p>
+      <p id="benchmark-error" class="embedding-error hidden" role="alert"></p>
+
+      <div id="benchmark-metrics" class="metric-grid" aria-live="polite"></div>
+
+      <div class="chart-grid">
+        <article class="chart-card">
+          <h3>Message size vs latency</h3>
+          <svg id="latency-chart" viewBox="0 0 320 180" role="img" aria-label="Message size versus latency chart"></svg>
+        </article>
+        <article class="chart-card">
+          <h3>Message size vs throughput</h3>
+          <svg id="throughput-chart" viewBox="0 0 320 180" role="img" aria-label="Message size versus embedding throughput chart"></svg>
+        </article>
+        <article class="chart-card">
+          <h3>Recovery success rate by message size</h3>
+          <svg id="recovery-chart" viewBox="0 0 320 180" role="img" aria-label="Recovery success rate by message size chart"></svg>
+        </article>
+        <article class="chart-card chart-card-wide">
+          <h3>Processing-stage time breakdown</h3>
+          <svg id="stage-chart" viewBox="0 0 640 220" role="img" aria-label="Average processing stage timings chart"></svg>
+        </article>
+      </div>
+
+      <div class="table-card">
+        <div class="table-header">
+          <h3>Benchmark summary</h3>
+        </div>
+        <div class="table-wrap">
+          <table id="benchmark-summary-table">
+            <thead>
+              <tr>
+                <th>Message size</th>
+                <th>Median latency</th>
+                <th>Throughput</th>
+                <th>Recovery rate</th>
+                <th>Successful / total</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td colspan="5" class="empty-state">No summary results yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <div class="table-header">
+          <h3>Detailed trial results</h3>
+        </div>
+        <div class="table-wrap">
+          <table id="benchmark-table">
+            <thead>
+              <tr>
+                <th>Profile</th>
+                <th>Mode</th>
+                <th>Trial</th>
+                <th>LLM</th>
+                <th>Msg chars</th>
+                <th>Total ms</th>
+                <th>Recovery</th>
+                <th>Throughput</th>
+                <th>Carrier length</th>
+                <th>Auth tests</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td colspan="10" class="empty-state">No benchmark data yet. Run a benchmark to populate the live results.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
     <details class="session-details">
       <summary>Session log and protocol notes</summary>
       <section class="session-section">
@@ -207,6 +325,6 @@
     </details>
   </main>
 
-  <footer><span>LLM-SHIELD · Local research demo</span><span>127.0.0.1 · No browser persistence</span></footer>
+  <footer><span>CovertComm-LLM · Local research demonstration</span><span>127.0.0.1 · No browser persistence</span></footer>
 </body>
 </html>

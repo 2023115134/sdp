@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from app.performance import benchmark_to_csv, run_benchmark
 from app.web_demo import (
     DemoPipelineError,
     create_ecdhe_session,
@@ -57,6 +58,8 @@ class DemoRequestHandler(BaseHTTPRequestHandler):
             "/api/sender/stream",
             "/api/receiver",
             "/api/receiver/stream",
+            "/api/performance/benchmark",
+            "/api/performance/export",
         }:
             self._send_json(404, {"error": "Not found."})
             return
@@ -71,6 +74,24 @@ class DemoRequestHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/receiver/stream":
                 self._stream_receiver(payload)
+                return
+            if path == "/api/performance/benchmark":
+                report = run_benchmark(
+                    profile=payload.get("profile", "short"),
+                    trials=int(payload.get("trials", 3)),
+                    mode=payload.get("mode", "PSK"),
+                    use_mock_llm=payload.get("use_mock_llm"),
+                    include_auth_negative_tests=bool(payload.get("include_auth_negative_tests", True)),
+                )
+                self._send_json(200, report)
+                return
+            if path == "/api/performance/export":
+                csv_text = benchmark_to_csv(payload.get("report", {"trial_results": []}))
+                encoded = csv_text.encode("utf-8")
+                self.send_response(200)
+                self._send_headers("text/csv; charset=utf-8", len(encoded))
+                self.end_headers()
+                self.wfile.write(encoded)
                 return
             if path == "/api/sender":
                 response = run_sender(
